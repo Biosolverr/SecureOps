@@ -1,0 +1,6 @@
+{
+  "name": "SecureOps",
+  "description": "Smart Contract Security Auditor. Analyze Solidity code for vulnerabilities, logic errors, and security risks in real-time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
