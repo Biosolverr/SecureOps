@@ -1,59 +1,24 @@
 import { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
+import { VAULT_ADDRESS, VAULT_ABI } from "./config";
 import {
   Shield, Lock, Unlock, Send, RotateCcw, AlertTriangle, CheckCircle2,
   Wallet, Copy, ExternalLink, Pause, Play, Key, ShieldAlert, Clock,
   ArrowRight, Coins, Image, RefreshCw, ChevronRight, Zap
 } from "lucide-react";
-
-const VAULT_ABI = [
-  "function currentState() view returns (uint8)",
-  "function counterparty() view returns (address)",
-  "function guardian() view returns (address)",
-  "function owner() view returns (address)",
-  "function commitmentHash() view returns (bytes32)",
-  "function lockDuration() view returns (uint256)",
-  "function lockTimestamp() view returns (uint256)",
-  "function refundDelay() view returns (uint256)",
-  "function depositedEthAmount() view returns (uint256)",
-  "function quarantineEndTime() view returns (uint256)",
-  "function quarantineInitiator() view returns (address)",
-  "function nonce() view returns (uint256)",
-  "function paused() view returns (bool)",
-  "function deposit() payable",
-  "function lock()",
-  "function initiateExecution(bytes32 secret)",
-  "function execute()",
-  "function refund()",
-  "function initiateQuarantine() payable",
-  "function releaseQuarantine()",
-  "function depositTokens(address token, uint256 amount)",
-  "function recoverTokens(address token, address to)",
-  "function recoverNFT(address token, address to, uint256 tokenId)",
-  "function pause()",
-  "function unpause()",
-  "function scheduleUpgrade(address newImplementation)",
-  "event Deposited(address indexed sender, uint256 indexed amount, uint256 timestamp)",
-  "event StateChanged(uint8 indexed from, uint8 indexed to, uint256 timestamp)",
-  "event Quarantined(address indexed initiator, uint256 indexed endTime)",
-  "event Refunded(address indexed recipient, uint256 indexed amount, uint256 timestamp)",
-];
-
 const STATES = ["INIT", "FUNDED", "LOCKED", "EXECUTION_PENDING", "EXECUTED", "REFUNDED"];
 const STATE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#f97316", "#10b981", "#8b5cf6"];
 const QUARANTINE_STAKE = ethers.parseEther("0.01");
-
 export default function App() {
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.Signer | null>(null);
   const [account, setAccount] = useState("");
-  const [vaultAddress, setVaultAddress] = useState("");
+  const [vaultAddress, setVaultAddress] = useState(VAULT_ADDRESS);
   const [vault, setVault] = useState<ethers.Contract | null>(null);
   const [vaultState, setVaultState] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [txStatus, setTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [activeTab, setActiveTab] = useState<"actions" | "tokens" | "admin">("actions");
-
   const [depositAmount, setDepositAmount] = useState("");
   const [secret, setSecret] = useState("");
   const [tokenAddress, setTokenAddress] = useState("");
@@ -61,7 +26,6 @@ export default function App() {
   const [recoverTo, setRecoverTo] = useState("");
   const [nftId, setNftId] = useState("");
   const [newImpl, setNewImpl] = useState("");
-
   const connectWallet = async () => {
     const eth = (window as any).ethereum;
     if (!eth) { alert("Install MetaMask"); return; }
@@ -72,7 +36,6 @@ export default function App() {
     setSigner(s);
     setAccount(addr);
   };
-
   const disconnect = () => {
     setProvider(null);
     setSigner(null);
@@ -81,7 +44,6 @@ export default function App() {
     setVaultState(null);
     setVaultAddress("");
   };
-
   const loadVault = async (address: string) => {
     if (!provider || !address) return;
     try {
@@ -98,7 +60,6 @@ export default function App() {
       setTxStatus({ type: "error", msg: "Failed to load vault: " + err.message });
     }
   };
-
   const executeTx = async (fn: () => Promise<any>, label: string) => {
     setLoading(true);
     setTxStatus(null);
@@ -114,7 +75,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
   const handleDeposit = () => executeTx(() => vault!.deposit({ value: ethers.parseEther(depositAmount) }), "Deposit");
   const handleLock = () => executeTx(() => vault!.lock(), "Lock");
   const handleInitiateExecution = () => executeTx(() => vault!.initiateExecution(ethers.encodeBytes32String(secret)), "Initiate Execution");
@@ -128,11 +88,9 @@ export default function App() {
   const handlePause = () => executeTx(() => vault!.pause(), "Pause");
   const handleUnpause = () => executeTx(() => vault!.unpause(), "Unpause");
   const handleScheduleUpgrade = () => executeTx(() => vault!.scheduleUpgrade(newImpl), "Schedule Upgrade");
-
   const isOwner = vaultState && account && vaultState.owner.toLowerCase() === account.toLowerCase();
   const isCounterparty = vaultState && account && vaultState.counterparty.toLowerCase() === account.toLowerCase();
   const isGuardian = vaultState && account && vaultState.guardian.toLowerCase() === account.toLowerCase();
-
   const shortAddr = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`;
   const formatEth = (v: bigint) => ethers.formatEther(v);
   const formatTime = (ts: number) => ts === 0 ? "—" : new Date(ts * 1000).toLocaleString();
@@ -144,21 +102,17 @@ export default function App() {
     const m = Math.floor((diff % 3600) / 60);
     return `${h}h ${m}m`;
   };
-
   useEffect(() => {
     if (vaultAddress && provider) loadVault(vaultAddress);
   }, [provider, signer, vaultAddress]);
-
   const StateBadge = ({ state }: { state: number }) => (
     <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase" style={{ background: STATE_COLORS[state] + "20", color: STATE_COLORS[state], border: `1px solid ${STATE_COLORS[state]}40` }}>
       <span className="w-2 h-2 rounded-full" style={{ background: STATE_COLORS[state] }} />
       {STATES[state]}
     </span>
   );
-
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans">
-      {/* Header */}
       <header className="border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -187,27 +141,24 @@ export default function App() {
           </div>
         </div>
       </header>
-
       <main className="max-w-7xl mx-auto px-6 py-10">
-        {/* Vault Address Input */}
         <div className="mb-8 p-6 bg-slate-50 border border-slate-200 rounded-2xl">
           <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2 block">Vault Contract Address</label>
           <div className="flex gap-3">
             <input
               value={vaultAddress}
               onChange={(e) => setVaultAddress(e.target.value)}
-              placeholder="0x... enter deployed vault address"
+              placeholder="0x..."
               className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl font-mono text-sm text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
             />
             <button onClick={() => vaultAddress && loadVault(vaultAddress)} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95">
               Load
             </button>
           </div>
+          <p className="text-[10px] text-slate-400 mt-2">Address from config.ts — deploy vault, then update this file</p>
         </div>
-
         {vaultState && (
           <>
-            {/* Status Bar */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               <div className="p-4 bg-white border border-slate-200 rounded-xl">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">State</p>
@@ -226,8 +177,6 @@ export default function App() {
                 <p className="text-sm font-bold text-slate-700">{vaultState.quarantineEndTime > Date.now() / 1000 ? `Active — ${timeLeft(vaultState.quarantineEndTime)}` : "None"}</p>
               </div>
             </div>
-
-            {/* Roles */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
               {[
                 { label: "Owner", addr: vaultState.owner, color: "blue" },
@@ -241,8 +190,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-
-            {/* Vault Details */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 text-xs">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
                 <span className="text-slate-400 font-bold">Lock Duration</span>
@@ -261,16 +208,12 @@ export default function App() {
                 <p className="font-mono text-slate-700 mt-1">{formatEth(vaultState.depositedEthAmount)} ETH</p>
               </div>
             </div>
-
-            {/* Tx Status */}
             {txStatus && (
               <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${txStatus.type === "success" ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}>
                 {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
                 <span className="text-sm font-medium">{txStatus.msg}</span>
               </div>
             )}
-
-            {/* Tabs */}
             <div className="flex gap-1 mb-6 bg-slate-100 p-1 rounded-xl w-fit">
               {[
                 { key: "actions" as const, label: "Actions", icon: Zap },
@@ -282,11 +225,8 @@ export default function App() {
                 </button>
               ))}
             </div>
-
-            {/* Actions Tab */}
             {activeTab === "actions" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Deposit */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center"><Send className="w-5 h-5 text-blue-600" /></div>
@@ -300,8 +240,6 @@ export default function App() {
                     {loading ? "Processing..." : "Deposit"}
                   </button>
                 </div>
-
-                {/* Lock */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center"><Lock className="w-5 h-5 text-amber-600" /></div>
@@ -315,8 +253,6 @@ export default function App() {
                     {loading ? "Processing..." : isOwner ? "Lock" : "Owner Only"}
                   </button>
                 </div>
-
-                {/* Initiate Execution */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center"><Key className="w-5 h-5 text-orange-600" /></div>
@@ -330,8 +266,6 @@ export default function App() {
                     {loading ? "Processing..." : "Reveal Secret"}
                   </button>
                 </div>
-
-                {/* Execute */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center"><CheckCircle2 className="w-5 h-5 text-emerald-600" /></div>
@@ -345,8 +279,6 @@ export default function App() {
                     {loading ? "Processing..." : isOwner || isCounterparty ? "Execute" : "Owner/Counterparty Only"}
                   </button>
                 </div>
-
-                {/* Refund */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-purple-50 rounded-xl flex items-center justify-center"><RotateCcw className="w-5 h-5 text-purple-600" /></div>
@@ -360,8 +292,6 @@ export default function App() {
                     {loading ? "Processing..." : isOwner ? "Refund" : "Owner Only"}
                   </button>
                 </div>
-
-                {/* Quarantine */}
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center"><AlertTriangle className="w-5 h-5 text-red-600" /></div>
@@ -381,8 +311,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
-            {/* Tokens Tab */}
             {activeTab === "tokens" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
@@ -399,7 +327,6 @@ export default function App() {
                     {loading ? "Processing..." : "Deposit Tokens"}
                   </button>
                 </div>
-
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center"><RefreshCw className="w-5 h-5 text-green-600" /></div>
@@ -414,7 +341,6 @@ export default function App() {
                     {loading ? "Processing..." : "Recover Tokens"}
                   </button>
                 </div>
-
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-pink-50 rounded-xl flex items-center justify-center"><Image className="w-5 h-5 text-pink-600" /></div>
@@ -432,8 +358,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
-            {/* Admin Tab */}
             {activeTab === "admin" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
@@ -450,7 +374,6 @@ export default function App() {
                     {loading ? "Processing..." : vaultState.paused ? "Unpause" : "Pause Vault"}
                   </button>
                 </div>
-
                 <div className="p-6 bg-white border border-slate-200 rounded-2xl">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center"><ArrowRight className="w-5 h-5 text-indigo-600" /></div>
@@ -464,8 +387,6 @@ export default function App() {
                     {loading ? "Processing..." : "Schedule Upgrade"}
                   </button>
                 </div>
-
-                {/* Info */}
                 <div className="p-6 bg-blue-50 border border-blue-200 rounded-2xl md:col-span-2">
                   <h3 className="font-bold text-sm text-blue-800 mb-2">Vault Information</h3>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
@@ -491,7 +412,6 @@ export default function App() {
             )}
           </>
         )}
-
         {!vaultState && (
           <div className="text-center py-32">
             <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto mb-6">
