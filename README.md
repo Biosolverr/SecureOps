@@ -1,52 +1,76 @@
-# SecureOps
-# SecureVault Hardhat Project
+# SecureOps — SecureVault Hardhat Project
 
-A production-ready Hardhat project repository for a secure, upgradeable vault with advanced protection mechanisms.
+A production-ready Hardhat project for a secure, upgradeable vault with advanced protection mechanisms.
 
 ## Features
-- **UUPS Upgradeable**: Future-proof with 48h timelock for upgrades.
-- **State Machine**: INIT → FUNDED → LOCKED → EXECUTION_PENDING → EXECUTED / REFUNDED.
-- **Quarantine System**: 12h pause mechanism protected by 0.01 ETH stake.
-- **2-of-3 Recovery**: EIP-712 based account recovery (Owner + Guardian).
-- **Flash Loan Protection**: Modifier checking for EOA origins.
-- **Fee-on-Transfer Safe**: Handles tokens that deduct fees on transfer.
-- **NFT Ready**: Supports ERC721 deposits.
+
+- **UUPS Upgradeable** — future-proof with 48h timelock for upgrades
+- **State Machine** — `INIT → FUNDED → LOCKED → EXECUTION_PENDING → EXECUTED / REFUNDED`
+- **Quarantine System** — 12h pause protected by 0.01 ETH stake; stake refunded if owner releases early
+- **2-of-2 Recovery** — EIP-712 account recovery requiring distinct owner + guardian signatures
+- **Flash Loan Protection** — `noFlashLoan` modifier blocks contract-originated calls (EOA only)
+- **Fee-on-Transfer Safe** — balance diff check in `depositTokens`
+- **NFT Ready** — `IERC721Receiver` support with recovery after vault closes
+- **ReentrancyGuardUpgradeable** — OZ storage-layout-safe reentrancy protection
+- **Rate-limited API** — backend enforces per-IP limits on AI endpoints
+
+## Security Notes
+
+- `noFlashLoan` uses `tx.origin != msg.sender`. This blocks proxy/contract callers but does **not** protect against EOA-relayed flash loans or ERC-4337 account abstraction — treat as a deterrent, not a guarantee.
+- Quarantine stake (0.01 ETH) is returned to initiator if `releaseQuarantine()` is called by owner. If quarantine expires naturally, stake remains in the contract as a spam deterrent.
+- The `receive()` fallback does **not** trigger quarantine — use `initiateQuarantine()` explicitly.
 
 ## Prerequisites
+
 - Node.js v18+
 - npm or yarn
 
 ## Installation
+
 ```bash
 npm install
 ```
 
 ## Compilation
+
 ```bash
 npx hardhat compile
 ```
 
 ## Testing
-Run the comprehensive suite of 15+ tests:
+
 ```bash
 npx hardhat test
 ```
 
 ## Deployment
-Create a `.env` file from `.env.example` and populate it.
 
-### Deploy to Base Sepolia
+Copy `.env.example` to `.env` and fill in all values. **Do not deploy with the default `VAULT_SECRET`.**
+
+### Base Sepolia
+
 ```bash
 npx hardhat run scripts/deploy.js --network baseSepolia
 ```
 
-### Deploy to Base Mainnet
+### Base Mainnet
+
 ```bash
 npx hardhat run scripts/deploy.js --network baseMainnet
 ```
 
-## Contact Addresses
-- **SecureVault**: [DEPLOYED_ADDRESS_HERE]
+After deployment, update `src/config.ts` with the printed `VAULT_ADDRESS`.
+
+## Running the Local Dev Server
+
+```bash
+npm run dev
+```
+
+## Contract Addresses
+
+- **SecureVault**: `[DEPLOYED_ADDRESS_HERE]`
 
 ## License
+
 MIT
