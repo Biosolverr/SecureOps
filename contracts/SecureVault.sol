@@ -5,12 +5,14 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
+// ─── Custom Errors ────────────────────────────────────────────────────────────
 error InvalidAddress();
 error DuplicateRoles();
 error LockDurationTooShort();
@@ -34,7 +36,10 @@ error InvalidImplementation();
 error FundIntegrityViolated();
 error ZeroDeposit();
 error QuarantineActive();
+// FIX: dedicated error for wrong vault state (was reusing InvalidAddress)
+error InvalidState();
 
+// ─── RolesRegistry ───────────────────────────────────────────────────────────
 contract RolesRegistry {
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
     bytes32 public constant COUNTERPARTY_ROLE = keccak256("COUNTERPARTY_ROLE");
@@ -59,6 +64,7 @@ contract RolesRegistry {
     }
 }
 
+// ─── UpgradeTimelock ─────────────────────────────────────────────────────────
 abstract contract UpgradeTimelock {
     uint256 public constant UPGRADE_DELAY = 48 hours;
     uint256 public upgradeTimelock;
@@ -78,29 +84,22 @@ abstract contract UpgradeTimelock {
     }
 }
 
-abstract contract SecureVaultBase {
-    bool private _locked;
-    modifier nonReentrant() {
-        if (_locked) revert InvalidAddress();
-        _locked = true;
-        _;
-        _locked = false;
-    }
-}
-
-contract SecureVault is 
-    UUPSUpgradeable, 
-    OwnableUpgradeable, 
+// ─── SecureVault ─────────────────────────────────────────────────────────────
+contract SecureVault is
+    UUPSUpgradeable,
+    OwnableUpgradeable,
     PausableUpgradeable,
-    SecureVaultBase, 
-    EIP712Upgradeable, 
-    RolesRegistry, 
+    // FIX: use OZ upgradeable reentrancy guard — storage-layout safe, has __gap
+    ReentrancyGuardUpgradeable,
+    EIP712Upgradeable,
+    RolesRegistry,
     UpgradeTimelock,
-    IERC721Receiver 
+    IERC721Receiver
 {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
+    // ─── State Machine ────────────────────────────────────────────────────
     enum State { INIT, FUNDED, LOCKED, EXECUTION_PENDING, EXECUTED, REFUNDED }
 
     State public currentState;
@@ -112,24 +111,29 @@ contract SecureVault is
     uint256 public refundDelay;
     uint256 public depositedEthAmount;
 
+    // ─── Quarantine ───────────────────────────────────────────────────────
     uint256 public constant QUARANTINE_STAKE = 0.01 ether;
     uint256 public quarantineEndTime;
     address public quarantineInitiator;
+    // FIX: track stake for refund on owner release
+    uint256 private _quarantineStake;
 
+    // ─── Recovery ─────────────────────────────────────────────────────────
     uint256 public nonce;
+    bytes32 public constant RECOVERY_TYPEHASH =
+        keccak256("Recovery(address newOwner,uint256 nonce,uint256 deadline)");
 
-    bytes32 public constant RECOVERY_TYPEHASH = keccak256("Recovery(address newOwner,uint256 nonce,uint256 deadline)");
-
+    // ─── Events ───────────────────────────────────────────────────────────
     event Deposited(address indexed sender, uint256 indexed amount, uint256 timestamp);
     event StateChanged(State indexed from, State indexed to, uint256 timestamp);
     event SecretRevealed(bytes32 indexed secretHash);
     event Quarantined(address indexed initiator, uint256 indexed endTime);
+    event QuarantineReleased(address indexed initiator, uint256 stakeRefunded);
     event Refunded(address indexed recipient, uint256 indexed amount, uint256 timestamp);
     event TokensRecovered(address indexed token, address indexed to, uint256 indexed amount);
     event NFTRecovered(address indexed token, address indexed to, uint256 indexed tokenId);
 
-
-    State private lastState;
+    // ─── Modifiers ────────────────────────────────────────────────────────
 
     modifier onlyWhileNotQuarantined() {
         if (block.timestamp < quarantineEndTime) revert QuarantineActive();
@@ -141,11 +145,14 @@ contract SecureVault is
         _;
     }
 
+    // FIX: inState now reverts with InvalidState, not InvalidAddress
     modifier inState(State _state) {
-        if (currentState != _state) revert InvalidAddress();
+        if (currentState != _state) revert InvalidState();
         _;
     }
 
+    // NOTE: tx.origin != msg.sender blocks contract callers (flash loan bots, proxies).
+    // Does not block EOA-relayed flash loans or AA wallets — documented limitation.
     modifier noFlashLoan() {
         if (tx.origin != msg.sender) revert Unauthorized();
         _;
@@ -161,18 +168,28 @@ contract SecureVault is
         _disableInitializers();
     }
 
+    // ─── Initializer ─────────────────────────────────────────────────────
+
     function initialize(
         address _owner,
         address _guardian,
         address _counterparty,
         bytes32 _commitmentHash,
         uint256 _lockDuration
-    ) public initializer onlyValidAddress(_owner) onlyValidAddress(_guardian) onlyValidAddress(_counterparty) {
+    )
+        public
+        initializer
+        onlyValidAddress(_owner)
+        onlyValidAddress(_guardian)
+        onlyValidAddress(_counterparty)
+    {
         if (_lockDuration < 1 hours) revert LockDurationTooShort();
-        if (_owner == _guardian || _owner == _counterparty || _guardian == _counterparty) revert DuplicateRoles();
+        if (_owner == _guardian || _owner == _counterparty || _guardian == _counterparty)
+            revert DuplicateRoles();
 
         __Ownable_init(_owner);
         __Pausable_init();
+        __ReentrancyGuard_init();
         __EIP712_init("SecureVault", "1");
 
         guardian = _guardian;
@@ -186,17 +203,27 @@ contract SecureVault is
         _grantRole(COUNTERPARTY_ROLE, _counterparty);
     }
 
+    // ─── Admin ────────────────────────────────────────────────────────────
+
     function pause() external onlyOwner {
         _pause();
-        emit Paused(msg.sender);
     }
 
     function unpause() external onlyOwner {
         _unpause();
-        emit Unpaused(msg.sender);
     }
 
-    function deposit() external payable nonReentrant whenNotPaused onlyWhileNotQuarantined inState(State.INIT) noFlashLoan {
+    // ─── Core Vault Flow ─────────────────────────────────────────────────
+
+    function deposit()
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        onlyWhileNotQuarantined
+        inState(State.INIT)
+        noFlashLoan
+    {
         if (msg.value == 0) revert ZeroDeposit();
         depositedEthAmount = msg.value;
         currentState = State.FUNDED;
@@ -204,13 +231,26 @@ contract SecureVault is
         emit StateChanged(State.INIT, State.FUNDED, block.timestamp);
     }
 
-    function lock() external onlyOwner nonReentrant whenNotPaused onlyWhileNotQuarantined inState(State.FUNDED) {
+    function lock()
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+        onlyWhileNotQuarantined
+        inState(State.FUNDED)
+    {
         currentState = State.LOCKED;
         lockTimestamp = block.timestamp;
         emit StateChanged(State.FUNDED, State.LOCKED, block.timestamp);
     }
 
-    function initiateExecution(bytes32 secret) external whenNotPaused onlyWhileNotQuarantined inState(State.LOCKED) noFlashLoan {
+    function initiateExecution(bytes32 secret)
+        external
+        whenNotPaused
+        onlyWhileNotQuarantined
+        inState(State.LOCKED)
+        noFlashLoan
+    {
         if (keccak256(abi.encodePacked(secret)) != commitmentHash) revert InvalidSecret();
         if (block.timestamp < lockTimestamp + lockDuration) revert LockPeriodNotOver();
 
@@ -219,57 +259,90 @@ contract SecureVault is
         emit StateChanged(State.LOCKED, State.EXECUTION_PENDING, block.timestamp);
     }
 
-    function execute() external nonReentrant whenNotPaused onlyWhileNotQuarantined inState(State.EXECUTION_PENDING) {
+    function execute()
+        external
+        nonReentrant
+        whenNotPaused
+        onlyWhileNotQuarantined
+        inState(State.EXECUTION_PENDING)
+    {
         if (msg.sender != counterparty && msg.sender != owner()) revert Unauthorized();
 
-        currentState = State.EXECUTED;
         uint256 amount = depositedEthAmount;
         depositedEthAmount = 0;
+        currentState = State.EXECUTED;
 
-        lastState = State.EXECUTION_PENDING;
         emit StateChanged(State.EXECUTION_PENDING, State.EXECUTED, block.timestamp);
 
         (bool success, ) = payable(counterparty).call{value: amount}("");
         if (!success) revert TransferFailed();
 
-        assertFundIntegrity();
+        _assertFundIntegrity();
     }
 
     function refund() external nonReentrant {
         if (msg.sender != owner()) revert OnlyOwner();
-        if (currentState != State.FUNDED && 
-            (currentState != State.LOCKED || block.timestamp < lockTimestamp + lockDuration + refundDelay)) {
+        if (
+            currentState != State.FUNDED &&
+            (currentState != State.LOCKED ||
+                block.timestamp < lockTimestamp + lockDuration + refundDelay)
+        ) {
             revert RefundNotAvailable();
         }
 
         uint256 amount = depositedEthAmount;
         depositedEthAmount = 0;
-        lastState = currentState;
+        State prevState = currentState;
         currentState = State.REFUNDED;
 
-        emit StateChanged(lastState, State.REFUNDED, block.timestamp);
+        emit StateChanged(prevState, State.REFUNDED, block.timestamp);
         emit Refunded(msg.sender, amount, block.timestamp);
 
         (bool success, ) = payable(owner()).call{value: amount}("");
         if (!success) revert TransferFailed();
 
-        assertFundIntegrity();
+        _assertFundIntegrity();
     }
 
+    // ─── Quarantine ───────────────────────────────────────────────────────
+
+    /// @notice Pause all vault operations for 12h by staking 0.01 ETH.
+    ///         Stake is returned to initiator if owner calls releaseQuarantine early,
+    ///         otherwise it is retained by the contract as a spam deterrent.
     function initiateQuarantine() external payable onlyWhileNotQuarantined {
         if (msg.value != QUARANTINE_STAKE) revert MustStakeQuarantine();
-        if (quarantineEndTime >= block.timestamp) revert AlreadyQuarantined();
 
         quarantineInitiator = msg.sender;
         quarantineEndTime = block.timestamp + 12 hours;
+        _quarantineStake = msg.value;
         emit Quarantined(msg.sender, quarantineEndTime);
     }
 
-    function releaseQuarantine() external onlyOwner onlyDuringQuarantine {
+    /// @notice Owner can end quarantine early. Refunds the stake to the initiator.
+    function releaseQuarantine() external onlyOwner onlyDuringQuarantine nonReentrant {
+        address initiator = quarantineInitiator;
+        uint256 stake = _quarantineStake;
+
         quarantineEndTime = block.timestamp;
+        _quarantineStake = 0;
+        quarantineInitiator = address(0);
+
+        emit QuarantineReleased(initiator, stake);
+
+        if (stake > 0 && initiator != address(0)) {
+            (bool ok, ) = payable(initiator).call{value: stake}("");
+            if (!ok) revert TransferFailed();
+        }
     }
 
-    function depositTokens(address token, uint256 amount) external nonReentrant whenNotPaused onlyWhileNotQuarantined {
+    // ─── Token / NFT Recovery ────────────────────────────────────────────
+
+    function depositTokens(address token, uint256 amount)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyWhileNotQuarantined
+    {
         if (token == address(0)) revert InvalidTokenAddress();
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -278,7 +351,8 @@ contract SecureVault is
     }
 
     function recoverTokens(address token, address to) external onlyOwner {
-        if (currentState != State.EXECUTED && currentState != State.REFUNDED) revert VaultNotClosed();
+        if (currentState != State.EXECUTED && currentState != State.REFUNDED)
+            revert VaultNotClosed();
         if (to == address(0)) revert InvalidRecipient();
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance == 0) revert NoTokensToRecover();
@@ -287,11 +361,14 @@ contract SecureVault is
     }
 
     function recoverNFT(address token, address to, uint256 tokenId) external onlyOwner {
-        if (currentState != State.EXECUTED && currentState != State.REFUNDED) revert VaultNotClosed();
+        if (currentState != State.EXECUTED && currentState != State.REFUNDED)
+            revert VaultNotClosed();
         if (to == address(0)) revert InvalidRecipient();
         IERC721(token).safeTransferFrom(address(this), to, tokenId);
         emit NFTRecovered(token, to, tokenId);
     }
+
+    // ─── Account Recovery (EIP-712 2-of-2) ──────────────────────────────
 
     function recoverAccount(
         address newOwner,
@@ -302,12 +379,16 @@ contract SecureVault is
         if (block.timestamp > deadline) revert ExpiredDeadline();
         if (newOwner == owner()) revert NewOwnerMustDiffer();
 
-        bytes32 structHash = keccak256(abi.encode(RECOVERY_TYPEHASH, newOwner, nonce, deadline));
+        bytes32 structHash = keccak256(
+            abi.encode(RECOVERY_TYPEHASH, newOwner, nonce, deadline)
+        );
         bytes32 hash = _hashTypedDataV4(structHash);
 
         address signer1 = hash.recover(ownerSignature);
         address signer2 = hash.recover(guardianSignature);
 
+        // FIX: ensure both signatures are distinct (different private keys used)
+        if (signer1 == signer2) revert Unauthorized();
         if (signer1 != owner()) revert Unauthorized();
         if (signer2 != guardian) revert Unauthorized();
 
@@ -315,30 +396,46 @@ contract SecureVault is
         _transferOwnership(newOwner);
     }
 
-    function assertFundIntegrity() public view {
-        if (currentState == State.EXECUTED || currentState == State.REFUNDED) {
-            if (depositedEthAmount != 0) revert FundIntegrityViolated();
-        }
-    }
-
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
-        _checkUpgradeTimelock(newImplementation);
-    }
+    // ─── Upgrade ─────────────────────────────────────────────────────────
 
     function scheduleUpgrade(address newImplementation) external onlyOwner {
         if (newImplementation == address(0)) revert InvalidImplementation();
         _initiateUpgrade(newImplementation);
     }
 
-    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
+        _checkUpgradeTimelock(newImplementation);
+    }
+
+    // ─── ERC721 Receiver ─────────────────────────────────────────────────
+
+    function onERC721Received(address, address, uint256, bytes calldata)
+        external
+        pure
+        override
+        returns (bytes4)
+    {
         return IERC721Receiver.onERC721Received.selector;
     }
 
-    receive() external payable {
-        if (msg.value == QUARANTINE_STAKE && quarantineEndTime < block.timestamp) {
-            quarantineInitiator = msg.sender;
-            quarantineEndTime = block.timestamp + 12 hours;
-            emit Quarantined(msg.sender, quarantineEndTime);
+    // ─── Integrity Check ─────────────────────────────────────────────────
+
+    /// @dev Internal post-transfer integrity assertion.
+    function _assertFundIntegrity() internal view {
+        if (currentState == State.EXECUTED || currentState == State.REFUNDED) {
+            if (depositedEthAmount != 0) revert FundIntegrityViolated();
         }
     }
+
+    /// @notice Public view for off-chain monitoring / tests.
+    function assertFundIntegrity() external view {
+        _assertFundIntegrity();
+    }
+
+    // ─── Fallback ────────────────────────────────────────────────────────
+
+    /// @notice Accept ETH sent directly (e.g. from quarantine stake refund bounce).
+    ///         FIX: removed implicit quarantine trigger from receive() — 
+    ///         use initiateQuarantine() explicitly to avoid accidental activation.
+    receive() external payable {}
 }
