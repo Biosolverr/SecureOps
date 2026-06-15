@@ -1,14 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { VAULT_ADDRESS, VAULT_ABI } from "./config";
 import {
   Shield, Lock, Unlock, Send, RotateCcw, AlertTriangle, CheckCircle2,
-  Wallet, Copy, ExternalLink, Pause, Play, Key, ShieldAlert, Clock,
-  ArrowRight, Coins, Image, RefreshCw, ChevronRight, Zap
+  Wallet, Copy, Pause, Play, Key, ShieldAlert, Clock,
+  Coins, RefreshCw, Zap, Eye, EyeOff, ShieldCheck
 } from "lucide-react";
+
 const STATES = ["INIT", "FUNDED", "LOCKED", "EXECUTION_PENDING", "EXECUTED", "REFUNDED"];
 const STATE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#f97316", "#10b981", "#8b5cf6"];
 const QUARANTINE_STAKE = ethers.parseEther("0.01");
+
 export default function App() {
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.Signer | null>(null);
@@ -21,11 +23,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"actions" | "tokens" | "admin">("actions");
   const [depositAmount, setDepositAmount] = useState("");
   const [secret, setSecret] = useState("");
+  const [secretVisible, setSecretVisible] = useState(false);
   const [tokenAddress, setTokenAddress] = useState("");
   const [tokenAmount, setTokenAmount] = useState("");
   const [recoverTo, setRecoverTo] = useState("");
   const [nftId, setNftId] = useState("");
   const [newImpl, setNewImpl] = useState("");
+  const [copied, setCopied] = useState("");
+
   const connectWallet = async () => {
     const eth = (window as any).ethereum;
     if (!eth) { alert("Install MetaMask"); return; }
@@ -36,6 +41,7 @@ export default function App() {
     setSigner(s);
     setAccount(addr);
   };
+
   const disconnect = () => {
     setProvider(null);
     setSigner(null);
@@ -44,6 +50,7 @@ export default function App() {
     setVaultState(null);
     setVaultAddress("");
   };
+
   const loadVault = async (address: string) => {
     if (!provider || !address) return;
     try {
@@ -60,6 +67,7 @@ export default function App() {
       setTxStatus({ type: "error", msg: "Failed to load vault: " + err.message });
     }
   };
+
   const executeTx = async (fn: () => Promise<any>, label: string) => {
     setLoading(true);
     setTxStatus(null);
@@ -75,6 +83,7 @@ export default function App() {
       setLoading(false);
     }
   };
+
   const handleDeposit = () => executeTx(() => vault!.deposit({ value: ethers.parseEther(depositAmount) }), "Deposit");
   const handleLock = () => executeTx(() => vault!.lock(), "Lock");
   const handleInitiateExecution = () => executeTx(() => vault!.initiateExecution(ethers.encodeBytes32String(secret)), "Initiate Execution");
@@ -88,6 +97,7 @@ export default function App() {
   const handlePause = () => executeTx(() => vault!.pause(), "Pause");
   const handleUnpause = () => executeTx(() => vault!.unpause(), "Unpause");
   const handleScheduleUpgrade = () => executeTx(() => vault!.scheduleUpgrade(newImpl), "Schedule Upgrade");
+
   const isOwner = vaultState && account && vaultState.owner.toLowerCase() === account.toLowerCase();
   const isCounterparty = vaultState && account && vaultState.counterparty.toLowerCase() === account.toLowerCase();
   const isGuardian = vaultState && account && vaultState.guardian.toLowerCase() === account.toLowerCase();
@@ -102,327 +112,390 @@ export default function App() {
     const m = Math.floor((diff % 3600) / 60);
     return `${h}h ${m}m`;
   };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(""), 1500);
+  };
+
   useEffect(() => {
     if (vaultAddress && provider) loadVault(vaultAddress);
   }, [provider, signer, vaultAddress]);
+
   const StateBadge = ({ state }: { state: number }) => (
-    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase" style={{ background: STATE_COLORS[state] + "20", color: STATE_COLORS[state], border: `1px solid ${STATE_COLORS[state]}40` }}>
-      <span className="w-2 h-2 rounded-full" style={{ background: STATE_COLORS[state] }} />
+    <span
+      className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider"
+      style={{
+        background: `linear-gradient(135deg, ${STATE_COLORS[state]}15, ${STATE_COLORS[state]}08)`,
+        color: STATE_COLORS[state],
+        border: `1px solid ${STATE_COLORS[state]}30`,
+        boxShadow: `0 0 20px ${STATE_COLORS[state]}10`
+      }}
+    >
+      <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: STATE_COLORS[state] }} />
       {STATES[state]}
     </span>
   );
+
+  const GlassCard = ({ children, className = "", hover = true }: { children: React.ReactNode; className?: string; hover?: boolean }) => (
+    <div className={`relative rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-xl p-6 transition-all duration-300 ${hover ? "hover:border-white/20 hover:bg-white/[0.06] hover:shadow-2xl hover:shadow-black/20" : ""} ${className}`}>
+      {children}
+    </div>
+  );
+
+  const ActionCard = ({ icon: Icon, iconColor, title, subtitle, children, disabled }: {
+    icon: any; iconColor: string; title: string; subtitle: string; children: React.ReactNode; disabled?: boolean;
+  }) => (
+    <GlassCard className={`group ${disabled ? "opacity-50" : ""}`}>
+      <div className="flex items-center gap-4 mb-5">
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center transition-transform duration-300 group-hover:scale-110"
+          style={{ background: `linear-gradient(135deg, ${iconColor}20, ${iconColor}08)`, border: `1px solid ${iconColor}20` }}>
+          <Icon className="w-5 h-5" style={{ color: iconColor }} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-white">{title}</h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">{subtitle}</p>
+        </div>
+      </div>
+      {children}
+    </GlassCard>
+  );
+
+  const Input = ({ value, onChange, placeholder, type = "text" }: {
+    value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; placeholder: string; type?: string;
+  }) => (
+    <input
+      type={type}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      className="w-full px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 mb-3 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
+    />
+  );
+
+  const Button = ({ onClick, disabled, children, variant = "primary", className = "" }: {
+    onClick: () => void; disabled?: boolean; children: React.ReactNode; variant?: "primary" | "danger" | "ghost" | "success" | "amber" | "purple" | "indigo"; className?: string;
+  }) => {
+    const variants: Record<string, string> = {
+      primary: "bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 shadow-lg shadow-blue-500/20",
+      success: "bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 shadow-lg shadow-emerald-500/20",
+      danger: "bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 shadow-lg shadow-red-500/20",
+      ghost: "bg-white/[0.05] hover:bg-white/[0.1] border border-white/10",
+      amber: "bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 shadow-lg shadow-amber-500/20",
+      purple: "bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 shadow-lg shadow-purple-500/20",
+      indigo: "bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 shadow-lg shadow-indigo-500/20",
+    };
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled || loading}
+        className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none ${variants[variant]} ${className}`}
+      >
+        {loading ? (
+          <span className="flex items-center justify-center gap-2">
+            <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            Processing...
+          </span>
+        ) : children}
+      </button>
+    );
+  };
+
+  const RoleCard = ({ label, addr, color, isYou }: { label: string; addr: string; color: string; isYou: boolean }) => (
+    <div className={`p-4 rounded-xl border transition-all duration-300 ${isYou ? "border-blue-500/40 bg-blue-500/5 shadow-lg shadow-blue-500/5" : "border-white/5 bg-white/[0.02]"}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</span>
+        {isYou && (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+            <span className="text-[9px] font-bold text-blue-400">YOU</span>
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <p className="font-mono text-xs text-slate-400 break-all flex-1">{addr}</p>
+        <button onClick={() => copyToClipboard(addr, label)} className="p-1.5 rounded-lg hover:bg-white/5 transition-colors">
+          <Copy className={`w-3 h-3 ${copied === label ? "text-green-400" : "text-slate-600"}`} />
+        </button>
+      </div>
+    </div>
+  );
+
   return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans">
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+    <div className="min-h-screen bg-[#080b14] text-white font-sans relative overflow-hidden">
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-blue-600/5 rounded-full blur-[120px]" />
+        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[120px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-indigo-600/3 rounded-full blur-[150px]" />
+      </div>
+
+      <header className="relative border-b border-white/5 bg-[#080b14]/80 backdrop-blur-2xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-blue-600 to-blue-400 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)" }}>
               <Shield className="text-white w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-black text-lg tracking-tight text-slate-900 uppercase">SecureVault</h1>
-              <p className="text-[9px] text-slate-400 font-mono tracking-widest">PRODUCTION READY</p>
+              <h1 className="font-black text-base tracking-tight text-white uppercase">SecureVault</h1>
+              <p className="text-[9px] text-blue-400/60 font-mono tracking-widest">PRODUCTION READY</p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             {account ? (
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-full">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                  <span className="text-xs font-mono text-blue-700">{shortAddr(account)}</span>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/10 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
+                  <span className="text-xs font-mono text-slate-300">{shortAddr(account)}</span>
                 </div>
-                <button onClick={disconnect} className="text-xs text-slate-400 hover:text-red-500 transition-colors">Disconnect</button>
+                <button onClick={disconnect} className="text-xs text-slate-500 hover:text-red-400 transition-colors duration-200">Disconnect</button>
               </div>
             ) : (
-              <button onClick={connectWallet} className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20 active:scale-95">
+              <button onClick={connectWallet} className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95 text-white" style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.3)" }}>
                 <Wallet className="w-4 h-4" /> Connect Wallet
               </button>
             )}
           </div>
         </div>
       </header>
-      <main className="max-w-7xl mx-auto px-6 py-10">
-        <div className="mb-8 p-6 bg-slate-50 border border-slate-200 rounded-2xl">
-          <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2 block">Vault Contract Address</label>
+
+      <main className="relative max-w-7xl mx-auto px-6 py-10">
+        <GlassCard className="mb-8" hover={false}>
+          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3 block">Vault Contract Address</label>
           <div className="flex gap-3">
             <input
               value={vaultAddress}
               onChange={(e) => setVaultAddress(e.target.value)}
               placeholder="0x..."
-              className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl font-mono text-sm text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+              className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl font-mono text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
             />
-            <button onClick={() => vaultAddress && loadVault(vaultAddress)} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95">
+            <button
+              onClick={() => vaultAddress && loadVault(vaultAddress)}
+              className="px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95 text-white"
+              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.2)" }}
+            >
               Load
             </button>
           </div>
-          <p className="text-[10px] text-slate-400 mt-2">Address from config.ts — deploy vault, then update this file</p>
-        </div>
+        </GlassCard>
+
         {vaultState && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-              <div className="p-4 bg-white border border-slate-200 rounded-xl">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">State</p>
+              <GlassCard className="!p-4">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">State</p>
                 <StateBadge state={vaultState.state} />
-              </div>
-              <div className="p-4 bg-white border border-slate-200 rounded-xl">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Balance</p>
-                <p className="text-xl font-black text-slate-900">{formatEth(vaultState.balance)} <span className="text-sm text-slate-400">ETH</span></p>
-              </div>
-              <div className="p-4 bg-white border border-slate-200 rounded-xl">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Paused</p>
-                <p className={`text-sm font-bold ${vaultState.paused ? "text-red-500" : "text-green-500"}`}>{vaultState.paused ? "YES" : "NO"}</p>
-              </div>
-              <div className="p-4 bg-white border border-slate-200 rounded-xl">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Quarantine</p>
-                <p className="text-sm font-bold text-slate-700">{vaultState.quarantineEndTime > Date.now() / 1000 ? `Active — ${timeLeft(vaultState.quarantineEndTime)}` : "None"}</p>
-              </div>
+              </GlassCard>
+              <GlassCard className="!p-4">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Balance</p>
+                <p className="text-xl font-black text-white">{formatEth(vaultState.balance)} <span className="text-sm text-slate-500">ETH</span></p>
+              </GlassCard>
+              <GlassCard className="!p-4">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Paused</p>
+                <p className={`text-sm font-bold ${vaultState.paused ? "text-red-400" : "text-emerald-400"}`}>
+                  {vaultState.paused ? "YES" : "NO"}
+                </p>
+              </GlassCard>
+              <GlassCard className="!p-4">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Quarantine</p>
+                <p className="text-sm font-bold text-slate-300">
+                  {vaultState.quarantineEndTime > Date.now() / 1000 ? `Active — ${timeLeft(vaultState.quarantineEndTime)}` : "None"}
+                </p>
+              </GlassCard>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
               {[
-                { label: "Owner", addr: vaultState.owner, color: "blue" },
-                { label: "Guardian", addr: vaultState.guardian, color: "purple" },
-                { label: "Counterparty", addr: vaultState.counterparty, color: "emerald" }
+                { label: "Owner", addr: vaultState.owner, color: "#3b82f6" },
+                { label: "Guardian", addr: vaultState.guardian, color: "#a855f7" },
+                { label: "Counterparty", addr: vaultState.counterparty, color: "#10b981" }
               ].map(r => (
-                <div key={r.label} className={`p-4 bg-white border rounded-xl ${account && r.addr.toLowerCase() === account ? "border-blue-400 ring-2 ring-blue-100" : "border-slate-200"}`}>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{r.label}</p>
-                  <p className="font-mono text-xs text-slate-600 break-all">{r.addr}</p>
-                  {account && r.addr.toLowerCase() === account && <span className="text-[9px] text-blue-500 font-bold mt-1 inline-block">← YOU</span>}
-                </div>
+                <RoleCard
+                  key={r.label}
+                  label={r.label}
+                  addr={r.addr}
+                  color={r.color}
+                  isYou={!!(account && r.addr.toLowerCase() === account)}
+                />
               ))}
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 text-xs">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <span className="text-slate-400 font-bold">Lock Duration</span>
-                <p className="font-mono text-slate-700 mt-1">{vaultState.lockDuration}s ({Math.floor(vaultState.lockDuration / 3600)}h)</p>
-              </div>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <span className="text-slate-400 font-bold">Lock Timestamp</span>
-                <p className="font-mono text-slate-700 mt-1">{formatTime(vaultState.lockTimestamp)}</p>
-              </div>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <span className="text-slate-400 font-bold">Refund Delay</span>
-                <p className="font-mono text-slate-700 mt-1">{vaultState.refundDelay}s ({Math.floor(vaultState.refundDelay / 3600)}h)</p>
-              </div>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <span className="text-slate-400 font-bold">Deposited</span>
-                <p className="font-mono text-slate-700 mt-1">{formatEth(vaultState.depositedEthAmount)} ETH</p>
-              </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              {[
+                { label: "Lock Duration", value: `${vaultState.lockDuration}s (${Math.floor(vaultState.lockDuration / 3600)}h)`, icon: Lock },
+                { label: "Lock Timestamp", value: formatTime(vaultState.lockTimestamp), icon: Clock },
+                { label: "Refund Delay", value: `${vaultState.refundDelay}s (${Math.floor(vaultState.refundDelay / 3600)}h)`, icon: RotateCcw },
+                { label: "Deposited", value: `${formatEth(vaultState.depositedEthAmount)} ETH`, icon: Coins }
+              ].map((item) => (
+                <GlassCard key={item.label} className="!p-4">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <item.icon className="w-3.5 h-3.5 text-slate-600" />
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{item.label}</span>
+                  </div>
+                  <p className="font-mono text-xs text-slate-300">{item.value}</p>
+                </GlassCard>
+              ))}
             </div>
+
             {txStatus && (
-              <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${txStatus.type === "success" ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}>
+              <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${
+                txStatus.type === "success"
+                  ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
+                  : "bg-red-500/10 border border-red-500/20 text-red-300"
+              }`}>
                 {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
                 <span className="text-sm font-medium">{txStatus.msg}</span>
               </div>
             )}
-            <div className="flex gap-1 mb-6 bg-slate-100 p-1 rounded-xl w-fit">
+
+            <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/5 p-1 rounded-xl w-fit">
               {[
                 { key: "actions" as const, label: "Actions", icon: Zap },
                 { key: "tokens" as const, label: "Tokens", icon: Coins },
                 { key: "admin" as const, label: "Admin", icon: ShieldAlert }
               ].map(t => (
-                <button key={t.key} onClick={() => setActiveTab(t.key)} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === t.key ? "bg-white shadow text-blue-600" : "text-slate-400 hover:text-slate-600"}`}>
+                <button
+                  key={t.key}
+                  onClick={() => setActiveTab(t.key)}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-200 ${
+                    activeTab === t.key
+                      ? "bg-white/[0.1] text-white shadow-lg"
+                      : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]"
+                  }`}
+                >
                   <t.icon className="w-4 h-4" /> {t.label}
                 </button>
               ))}
             </div>
+
             {activeTab === "actions" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center"><Send className="w-5 h-5 text-blue-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Deposit ETH</h3>
-                      <p className="text-[10px] text-slate-400">State: INIT → FUNDED</p>
-                    </div>
+                <ActionCard icon={Send} iconColor="#3b82f6" title="Deposit ETH" subtitle="State: INIT → FUNDED">
+                  <Input value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Amount in ETH" />
+                  <Button onClick={handleDeposit} disabled={vaultState.state !== 0}>Deposit ETH</Button>
+                </ActionCard>
+
+                <ActionCard icon={Lock} iconColor="#f59e0b" title="Lock Vault" subtitle="State: FUNDED → LOCKED">
+                  <p className="text-xs text-slate-500 mb-4">Locks vault for {Math.floor(vaultState.lockDuration / 3600)} hours</p>
+                  <Button onClick={handleLock} disabled={vaultState.state !== 1 || !isOwner} variant="amber">
+                    {isOwner ? "Lock Vault" : "Owner Only"}
+                  </Button>
+                </ActionCard>
+
+                <ActionCard icon={Key} iconColor="#f97316" title="Initiate Execution" subtitle="State: LOCKED → EXECUTION_PENDING">
+                  <div className="relative mb-3">
+                    <input
+                      type={secretVisible ? "text" : "password"}
+                      value={secret}
+                      onChange={e => setSecret(e.target.value)}
+                      placeholder="Enter secret to reveal"
+                      className="w-full px-4 py-3 pr-10 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all duration-200"
+                    />
+                    <button type="button" onClick={() => setSecretVisible(!secretVisible)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                      {secretVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
-                  <input value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Amount in ETH" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleDeposit} disabled={loading || vaultState.state !== 0} className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Deposit"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center"><Lock className="w-5 h-5 text-amber-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Lock Vault</h3>
-                      <p className="text-[10px] text-slate-400">State: FUNDED → LOCKED</p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-500 mb-4">Locks vault for {Math.floor(vaultState.lockDuration / 3600)} hours. Only owner can lock.</p>
-                  <button onClick={handleLock} disabled={loading || vaultState.state !== 1 || !isOwner} className="w-full py-3 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : isOwner ? "Lock" : "Owner Only"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-orange-50 rounded-xl flex items-center justify-center"><Key className="w-5 h-5 text-orange-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Initiate Execution</h3>
-                      <p className="text-[10px] text-slate-400">State: LOCKED → EXECUTION_PENDING</p>
-                    </div>
-                  </div>
-                  <input value={secret} onChange={e => setSecret(e.target.value)} placeholder="Enter secret to reveal" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleInitiateExecution} disabled={loading || vaultState.state !== 2} className="w-full py-3 bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Reveal Secret"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center"><CheckCircle2 className="w-5 h-5 text-emerald-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Execute</h3>
-                      <p className="text-[10px] text-slate-400">State: EXECUTION_PENDING → EXECUTED</p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-500 mb-4">Sends {formatEth(vaultState.depositedEthAmount)} ETH to counterparty.</p>
-                  <button onClick={handleExecute} disabled={loading || vaultState.state !== 3 || (!isOwner && !isCounterparty)} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : isOwner || isCounterparty ? "Execute" : "Owner/Counterparty Only"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-purple-50 rounded-xl flex items-center justify-center"><RotateCcw className="w-5 h-5 text-purple-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Refund</h3>
-                      <p className="text-[10px] text-slate-400">State: FUNDED/LOCKED → REFUNDED</p>
-                    </div>
-                  </div>
+                  <Button onClick={handleInitiateExecution} disabled={vaultState.state !== 2} variant="amber">Reveal Secret</Button>
+                </ActionCard>
+
+                <ActionCard icon={CheckCircle2} iconColor="#10b981" title="Execute" subtitle="State: EXECUTION_PENDING → EXECUTED">
+                  <p className="text-xs text-slate-500 mb-4">Sends {formatEth(vaultState.depositedEthAmount)} ETH to counterparty</p>
+                  <Button onClick={handleExecute} disabled={vaultState.state !== 3 || (!isOwner && !isCounterparty)} variant="success">
+                    {isOwner || isCounterparty ? "Execute Transfer" : "Owner/Counterparty Only"}
+                  </Button>
+                </ActionCard>
+
+                <ActionCard icon={RotateCcw} iconColor="#a855f7" title="Refund" subtitle="State: FUNDED/LOCKED → REFUNDED">
                   <p className="text-xs text-slate-500 mb-4">Returns ETH to owner. Available from FUNDED or after lock + delay.</p>
-                  <button onClick={handleRefund} disabled={loading || !isOwner || (vaultState.state !== 1 && vaultState.state !== 2)} className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : isOwner ? "Refund" : "Owner Only"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center"><AlertTriangle className="w-5 h-5 text-red-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Quarantine</h3>
-                      <p className="text-[10px] text-slate-400">Pauses vault for 12h (0.01 ETH stake)</p>
-                    </div>
-                  </div>
+                  <Button onClick={handleRefund} disabled={!isOwner || (vaultState.state !== 1 && vaultState.state !== 2)} variant="purple">
+                    {isOwner ? "Refund ETH" : "Owner Only"}
+                  </Button>
+                </ActionCard>
+
+                <ActionCard icon={AlertTriangle} iconColor="#ef4444" title="Quarantine" subtitle="Pauses vault for 12h (0.01 ETH stake)">
                   <div className="flex gap-3">
-                    <button onClick={handleQuarantine} disabled={loading} className="flex-1 py-3 bg-red-500 hover:bg-red-600 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                      {loading ? "..." : "Activate"}
-                    </button>
-                    <button onClick={handleReleaseQuarantine} disabled={loading || !isOwner || vaultState.quarantineEndTime <= Date.now() / 1000} className="flex-1 py-3 bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 text-slate-600 rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                      {loading ? "..." : "Release"}
-                    </button>
+                    <Button onClick={handleQuarantine} variant="danger" className="!flex-1">Activate</Button>
+                    <Button onClick={handleReleaseQuarantine} disabled={!isOwner || vaultState.quarantineEndTime <= Date.now() / 1000} variant="ghost" className="!flex-1">Release</Button>
                   </div>
-                </div>
+                </ActionCard>
               </div>
             )}
+
             {activeTab === "tokens" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center"><Coins className="w-5 h-5 text-blue-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Deposit ERC20</h3>
-                      <p className="text-[10px] text-slate-400">Transfer tokens to vault</p>
-                    </div>
-                  </div>
-                  <input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token contract address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <input value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} placeholder="Amount" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleDepositTokens} disabled={loading} className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Deposit Tokens"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center"><RefreshCw className="w-5 h-5 text-green-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Recover ERC20</h3>
-                      <p className="text-[10px] text-slate-400">After vault closed (EXECUTED/REFUNDED)</p>
-                    </div>
-                  </div>
-                  <input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleRecoverTokens} disabled={loading || !isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Recover Tokens"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-pink-50 rounded-xl flex items-center justify-center"><Image className="w-5 h-5 text-pink-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Recover NFT</h3>
-                      <p className="text-[10px] text-slate-400">Recover ERC721 after vault closed</p>
-                    </div>
-                  </div>
-                  <input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="NFT contract address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <input value={nftId} onChange={e => setNftId(e.target.value)} placeholder="Token ID" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleRecoverNFT} disabled={loading || !isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} className="w-full py-3 bg-pink-600 hover:bg-pink-700 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Recover NFT"}
-                  </button>
-                </div>
+                <ActionCard icon={Coins} iconColor="#3b82f6" title="Deposit ERC20" subtitle="Transfer tokens to vault">
+                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token contract address" />
+                  <Input value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} placeholder="Amount" />
+                  <Button onClick={handleDepositTokens}>Deposit Tokens</Button>
+                </ActionCard>
+
+                <ActionCard icon={RefreshCw} iconColor="#10b981" title="Recover ERC20" subtitle="After vault closed (EXECUTED/REFUNDED)">
+                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token address" />
+                  <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
+                  <Button onClick={handleRecoverTokens} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="success">Recover Tokens</Button>
+                </ActionCard>
+
+                <ActionCard icon={ShieldCheck} iconColor="#ec4899" title="Recover NFT" subtitle="Recover ERC721 after vault closed">
+                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="NFT contract address" />
+                  <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
+                  <Input value={nftId} onChange={e => setNftId(e.target.value)} placeholder="Token ID" />
+                  <Button onClick={handleRecoverNFT} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="danger">Recover NFT</Button>
+                </ActionCard>
               </div>
             )}
+
             {activeTab === "admin" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-slate-100 rounded-xl flex items-center justify-center">
-                      {vaultState.paused ? <Play className="w-5 h-5 text-green-600" /> : <Pause className="w-5 h-5 text-red-600" />}
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-sm">{vaultState.paused ? "Unpause" : "Pause"}</h3>
-                      <p className="text-[10px] text-slate-400">Emergency stop for all operations</p>
-                    </div>
+                <ActionCard icon={vaultState.paused ? Play : Pause} iconColor={vaultState.paused ? "#10b981" : "#ef4444"} title={vaultState.paused ? "Unpause" : "Pause"} subtitle="Emergency stop for all operations">
+                  <Button onClick={vaultState.paused ? handleUnpause : handlePause} disabled={!isOwner} variant={vaultState.paused ? "success" : "danger"}>
+                    {vaultState.paused ? "Resume Vault" : "Pause Vault"}
+                  </Button>
+                </ActionCard>
+
+                <ActionCard icon={Zap} iconColor="#6366f1" title="Schedule Upgrade" subtitle="48h timelock required">
+                  <Input value={newImpl} onChange={e => setNewImpl(e.target.value)} placeholder="New implementation address" />
+                  <Button onClick={handleScheduleUpgrade} disabled={!isOwner} variant="indigo">Schedule Upgrade</Button>
+                </ActionCard>
+
+                <GlassCard className="md:col-span-2" hover={false}>
+                  <div className="flex items-center gap-2 mb-4">
+                    <ShieldCheck className="w-4 h-4 text-blue-400" />
+                    <h3 className="font-bold text-sm text-white">Vault Information</h3>
                   </div>
-                  <button onClick={vaultState.paused ? handleUnpause : handlePause} disabled={loading || !isOwner} className="w-full py-3 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : vaultState.paused ? "Unpause" : "Pause Vault"}
-                  </button>
-                </div>
-                <div className="p-6 bg-white border border-slate-200 rounded-2xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center"><ArrowRight className="w-5 h-5 text-indigo-600" /></div>
-                    <div>
-                      <h3 className="font-bold text-sm">Schedule Upgrade</h3>
-                      <p className="text-[10px] text-slate-400">48h timelock required</p>
-                    </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[
+                      { label: "Address", value: vaultAddress },
+                      { label: "Commitment Hash", value: shortAddr(vaultState.commitmentHash) },
+                      { label: "Nonce", value: vaultState.nonce },
+                      { label: "Refund Delay", value: `${Math.floor(vaultState.refundDelay / 3600)}h` }
+                    ].map((item) => (
+                      <div key={item.label}>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{item.label}</span>
+                        <p className="font-mono text-xs text-slate-300 mt-1 break-all">{item.value}</p>
+                      </div>
+                    ))}
                   </div>
-                  <input value={newImpl} onChange={e => setNewImpl(e.target.value)} placeholder="New implementation address" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono mb-3 outline-none focus:border-blue-400" />
-                  <button onClick={handleScheduleUpgrade} disabled={loading || !isOwner} className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
-                    {loading ? "Processing..." : "Schedule Upgrade"}
-                  </button>
-                </div>
-                <div className="p-6 bg-blue-50 border border-blue-200 rounded-2xl md:col-span-2">
-                  <h3 className="font-bold text-sm text-blue-800 mb-2">Vault Information</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-                    <div>
-                      <span className="text-blue-400 font-bold">Address</span>
-                      <p className="font-mono text-blue-700 mt-1 break-all">{vaultAddress}</p>
-                    </div>
-                    <div>
-                      <span className="text-blue-400 font-bold">Commitment Hash</span>
-                      <p className="font-mono text-blue-700 mt-1 break-all">{shortAddr(vaultState.commitmentHash)}</p>
-                    </div>
-                    <div>
-                      <span className="text-blue-400 font-bold">Nonce</span>
-                      <p className="font-mono text-blue-700 mt-1">{vaultState.nonce}</p>
-                    </div>
-                    <div>
-                      <span className="text-blue-400 font-bold">Refund Delay</span>
-                      <p className="font-mono text-blue-700 mt-1">{Math.floor(vaultState.refundDelay / 3600)}h</p>
-                    </div>
-                  </div>
-                </div>
+                </GlassCard>
               </div>
             )}
           </>
         )}
+
         {!vaultState && (
-          <div className="text-center py-32">
-            <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto mb-6">
-              <Shield className="w-10 h-10 text-blue-400" />
+          <div className="text-center py-32 relative">
+            <div className="relative inline-flex mb-8">
+              <div className="w-24 h-24 rounded-3xl flex items-center justify-center relative" style={{ background: "linear-gradient(135deg, rgba(37, 99, 235, 0.15), rgba(124, 58, 237, 0.15))", border: "1px solid rgba(255,255,255,0.08)" }}>
+                <Shield className="w-12 h-12 text-blue-400" />
+              </div>
+              <div className="absolute -inset-4 rounded-[28px] border border-white/[0.03] animate-pulse" />
             </div>
-            <h2 className="text-2xl font-black text-slate-900 mb-2">SecureVault DApp</h2>
-            <p className="text-sm text-slate-400 max-w-md mx-auto">Connect your wallet and enter a vault address to manage your secure vault.</p>
+            <h2 className="text-3xl font-black text-white mb-3">SecureVault DApp</h2>
+            <p className="text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
+              Connect your wallet and enter a vault address to manage your secure vault.
+            </p>
           </div>
         )}
       </main>
     </div>
   );
 }
-
