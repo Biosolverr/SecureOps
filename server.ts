@@ -2,9 +2,23 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import dotenv from "dotenv";
-import { analyzeVault, chatWithAgent, VaultState } from "./src/ai-agent";
+import { analyzeVault, chatWithAgent, VaultState, ChatMessage } from "./src/ai-agent";
 
 dotenv.config();
+
+// Simple in-memory rate limiter
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = rateLimits.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  return true;
+}
 
 async function startServer() {
   const app = express();
@@ -12,6 +26,7 @@ async function startServer() {
 
   app.use(express.json({ limit: "1mb" }));
 
+  // Security headers
   app.use((_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
@@ -26,14 +41,21 @@ async function startServer() {
   });
 
   app.post("/api/analyze", async (req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`analyze:${ip}`, 10, 60_000)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
+    const state = req.body as Partial<VaultState>;
+    if (!state.address || !state.currentState) {
+      res.status(400).json({ error: "Missing required vault state fields" });
+      return;
+    }
+
     try {
-      const vaultState: VaultState = req.body;
-      if (!vaultState.address || !vaultState.currentState) {
-        res.status(400).json({ error: "Missing vault state fields" });
-        return;
-      }
-      const result = await analyzeVault(vaultState);
-      res.json(JSON.parse(result));
+      const result = await analyzeVault(state as VaultState);
+      res.json(result);
     } catch (err: any) {
       console.error("Analyze error:", err.message);
       res.status(500).json({ error: "AI analysis failed", details: err.message });
@@ -41,13 +63,20 @@ async function startServer() {
   });
 
   app.post("/api/chat", async (req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`chat:${ip}`, 20, 60_000)) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    }
+
+    const { message, history } = req.body as { message: string; history?: ChatMessage[] };
+    if (!message) {
+      res.status(400).json({ error: "Missing message" });
+      return;
+    }
+
     try {
-      const { message, history } = req.body;
-      if (!message) {
-        res.status(400).json({ error: "Missing message" });
-        return;
-      }
-      const reply = await chatWithAgent(message, history || []);
+      const reply = await chatWithAgent(message, history ?? []);
       res.json({ reply });
     } catch (err: any) {
       console.error("Chat error:", err.message);
