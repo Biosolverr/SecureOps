@@ -1,12 +1,11 @@
 import Groq from "groq-sdk";
 
+// Single source of truth for the AI agent — used by both server.ts and Vercel api/ functions.
+
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const VAULT_SYSTEM_PROMPT = `You are CubHunter AI Agent — an expert smart contract security auditor and vault operations advisor.
-
-You analyze on-chain vault data and provide actionable security recommendations.
-
-RESPONSE FORMAT (always JSON):
+const AUDIT_SYSTEM_PROMPT = `You are CubHunter AI — expert smart contract security auditor for SecureVault.
+Analyze vault data and return ONLY valid JSON (no markdown, no preamble):
 {
   "status": "ok" | "warning" | "critical",
   "summary": "one-line assessment",
@@ -20,8 +19,11 @@ RESPONSE FORMAT (always JSON):
     { "name": "action_name", "description": "what it does", "priority": "high|medium|low" }
   ]
 }
-
 Be concise. Focus on security. Use technical language.`;
+
+const CHAT_SYSTEM_PROMPT = `You are CubHunter AI — expert smart contract security advisor for SecureVault.
+Help users understand vault operations, security risks, and best practices.
+Be concise and technical. Use bullet points for recommendations.`;
 
 export interface VaultState {
   address: string;
@@ -38,7 +40,12 @@ export interface VaultState {
   depositedEthAmount: string;
 }
 
-export async function analyzeVault(state: VaultState): Promise<string> {
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export async function analyzeVault(state: VaultState): Promise<object> {
   const prompt = `Analyze this deployed SecureVault and provide security assessment:
 
 Address: ${state.address}
@@ -54,7 +61,7 @@ Quarantine End: ${state.quarantineEndTime}
 Nonce: ${state.nonce}
 Deposited Amount: ${state.depositedEthAmount} ETH
 
-Current block time is approximately now. Evaluate:
+Evaluate:
 1. Is the vault in a safe state?
 2. Are there any immediate risks?
 3. What should the owner do next?
@@ -62,31 +69,35 @@ Current block time is approximately now. Evaluate:
 
   const response = await groq.chat.completions.create({
     messages: [
-      { role: "system", content: VAULT_SYSTEM_PROMPT },
-      { role: "user", content: prompt }
+      { role: "system", content: AUDIT_SYSTEM_PROMPT },
+      { role: "user", content: prompt },
     ],
     model: "llama-3.3-70b-versatile",
     temperature: 0.3,
     max_tokens: 1024,
-    response_format: { type: "json_object" }
+    response_format: { type: "json_object" },
   });
 
-  return response.choices[0]?.message?.content || '{"status":"error","summary":"No response from AI"}';
+  const raw = response.choices[0]?.message?.content ?? "{}";
+  return JSON.parse(raw);
 }
 
-export async function chatWithAgent(message: string, history: { role: string; content: string }[] = []): Promise<string> {
+export async function chatWithAgent(
+  message: string,
+  history: ChatMessage[] = []
+): Promise<string> {
   const messages = [
-    { role: "system" as const, content: VAULT_SYSTEM_PROMPT },
-    ...history.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    { role: "user" as const, content: message }
+    { role: "system" as const, content: CHAT_SYSTEM_PROMPT },
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+    { role: "user" as const, content: message },
   ];
 
   const response = await groq.chat.completions.create({
     messages,
     model: "llama-3.3-70b-versatile",
     temperature: 0.5,
-    max_tokens: 2048
+    max_tokens: 2048,
   });
 
-  return response.choices[0]?.message?.content || "No response from agent.";
+  return response.choices[0]?.message?.content ?? "No response from agent.";
 }
