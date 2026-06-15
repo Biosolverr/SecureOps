@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { ethers } from "ethers";
 import { VAULT_ADDRESS, VAULT_ABI } from "./config";
 import {
@@ -31,42 +31,57 @@ export default function App() {
   const [newImpl, setNewImpl] = useState("");
   const [copied, setCopied] = useState("");
 
+  const providerRef = useRef<ethers.BrowserProvider | null>(null);
+  const signerRef = useRef<ethers.Signer | null>(null);
+  const vaultAddressRef = useRef(vaultAddress);
+
+  useEffect(() => { vaultAddressRef.current = vaultAddress; }, [vaultAddress]);
+
   const connectWallet = async () => {
     const eth = (window as any).ethereum;
     if (!eth) { alert("Install MetaMask"); return; }
     const p = new ethers.BrowserProvider(eth);
     const s = await p.getSigner();
     const addr = await s.getAddress();
+    providerRef.current = p;
+    signerRef.current = s;
     setProvider(p);
     setSigner(s);
     setAccount(addr);
   };
 
   const disconnect = () => {
+    providerRef.current = null;
+    signerRef.current = null;
     setProvider(null);
     setSigner(null);
     setAccount("");
     setVault(null);
     setVaultState(null);
-    setVaultAddress("");
   };
 
-  const loadVault = async (address: string) => {
-    if (!provider || !address) return;
+  const loadVault = useCallback(async (address: string) => {
+    const p = providerRef.current;
+    const s = signerRef.current;
+    if (!p || !address) return;
+    setLoading(true);
+    setTxStatus(null);
     try {
-      const c = new ethers.Contract(address, VAULT_ABI, provider);
+      const c = new ethers.Contract(address, VAULT_ABI, p);
       const [state, owner, guardian, counterparty, commitmentHash, lockDuration, lockTimestamp, refundDelay, depositedEthAmount, quarantineEndTime, quarantineInitiator, nonce, paused] = await Promise.all([
         c.currentState(), c.owner(), c.guardian(), c.counterparty(), c.commitmentHash(),
         c.lockDuration(), c.lockTimestamp(), c.refundDelay(), c.depositedEthAmount(),
         c.quarantineEndTime(), c.quarantineInitiator(), c.nonce(), c.paused()
       ]);
-      const balance = await provider.getBalance(address);
+      const balance = await p.getBalance(address);
       setVaultState({ state: Number(state), owner, guardian, counterparty, commitmentHash, lockDuration: Number(lockDuration), lockTimestamp: Number(lockTimestamp), refundDelay: Number(refundDelay), depositedEthAmount, quarantineEndTime: Number(quarantineEndTime), quarantineInitiator, nonce: Number(nonce), paused, balance });
-      if (signer) setVault(new ethers.Contract(address, VAULT_ABI, signer));
+      if (s) setVault(new ethers.Contract(address, VAULT_ABI, s));
     } catch (err: any) {
-      setTxStatus({ type: "error", msg: "Failed to load vault: " + err.message });
+      setTxStatus({ type: "error", msg: "Failed to load vault: " + (err?.reason || err?.message || String(err)) });
+    } finally {
+      setLoading(false);
     }
-  };
+  }, []);
 
   const executeTx = async (fn: () => Promise<any>, label: string) => {
     setLoading(true);
@@ -75,7 +90,7 @@ export default function App() {
       const tx = await fn();
       await tx.wait();
       setTxStatus({ type: "success", msg: `${label} — confirmed` });
-      if (vaultAddress) await loadVault(vaultAddress);
+      if (vaultAddressRef.current) await loadVault(vaultAddressRef.current);
     } catch (err: any) {
       const msg = err?.reason || err?.message || "Transaction failed";
       setTxStatus({ type: "error", msg: `${label} — ${msg.slice(0, 120)}` });
@@ -120,8 +135,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (vaultAddress && provider) loadVault(vaultAddress);
-  }, [provider, signer, vaultAddress]);
+    if (vaultAddress && provider) {
+      loadVault(vaultAddress);
+    }
+  }, [provider, signer, loadVault]);
 
   const StateBadge = ({ state }: { state: number }) => (
     <span
@@ -279,6 +296,17 @@ export default function App() {
           </div>
         </GlassCard>
 
+        {txStatus && (
+          <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${
+            txStatus.type === "success"
+              ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
+              : "bg-red-500/10 border border-red-500/20 text-red-300"
+          }`}>
+            {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertTriangle className="w-5 h-5 shrink-0" />}
+            <span className="text-sm font-medium">{txStatus.msg}</span>
+          </div>
+        )}
+
         {vaultState && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -336,17 +364,6 @@ export default function App() {
                 </GlassCard>
               ))}
             </div>
-
-            {txStatus && (
-              <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${
-                txStatus.type === "success"
-                  ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
-                  : "bg-red-500/10 border border-red-500/20 text-red-300"
-              }`}>
-                {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
-                <span className="text-sm font-medium">{txStatus.msg}</span>
-              </div>
-            )}
 
             <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/5 p-1 rounded-xl w-fit">
               {[
