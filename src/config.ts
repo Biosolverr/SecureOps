@@ -1,4 +1,4 @@
-export const VAULT_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const VAULT_ADDRESS = "0x9f94712cc394F3Dd5DfaAab37D7f1189eCA8Fc49";
 export const VAULT_ABI = [
   "function currentState() view returns (uint8)",
   "function counterparty() view returns (address)",
