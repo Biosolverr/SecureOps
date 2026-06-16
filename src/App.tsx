@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ethers } from "ethers";
 import { VAULT_ADDRESS, VAULT_ABI } from "./config";
 import {
-  Shield, Lock, Unlock, Send, RotateCcw, AlertTriangle, CheckCircle2,
+  Shield, Lock, Send, RotateCcw, AlertTriangle, CheckCircle2,
   Wallet, Copy, Pause, Play, Key, ShieldAlert, Clock,
-  Coins, RefreshCw, Zap, Eye, EyeOff, ShieldCheck, Bot, MessageSquare, X, ChevronDown, ChevronUp
+  Coins, RefreshCw, Zap, Eye, EyeOff, ShieldCheck, Bot, MessageSquare, X,
+  ChevronDown, ChevronUp, UserCheck, Activity
 } from "lucide-react";
 
 const STATES = ["INIT", "FUNDED", "LOCKED", "EXECUTION_PENDING", "EXECUTED", "REFUNDED"];
@@ -29,6 +30,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [txStatus, setTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [activeTab, setActiveTab] = useState<"actions" | "tokens" | "admin" | "ai">("actions");
+
+  // Actions state
   const [depositAmount, setDepositAmount] = useState("");
   const [secret, setSecret] = useState("");
   const [secretVisible, setSecretVisible] = useState(false);
@@ -39,7 +42,15 @@ export default function App() {
   const [newImpl, setNewImpl] = useState("");
   const [copied, setCopied] = useState("");
 
-  // AI Agent state
+  // recoverAccount state
+  const [recoverNewOwner, setRecoverNewOwner] = useState("");
+  const [recoverDeadlineHours, setRecoverDeadlineHours] = useState("24");
+  const [recoverOwnerSig, setRecoverOwnerSig] = useState("");
+  const [recoverGuardianSig, setRecoverGuardianSig] = useState("");
+  const [integrityStatus, setIntegrityStatus] = useState<"idle" | "ok" | "fail">("idle");
+  const [integrityLoading, setIntegrityLoading] = useState(false);
+
+  // AI state
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -86,13 +97,26 @@ export default function App() {
     setTxStatus(null);
     try {
       const c = new ethers.Contract(address, VAULT_ABI, p);
-      const [state, owner, guardian, counterparty, commitmentHash, lockDuration, lockTimestamp, refundDelay, depositedEthAmount, quarantineEndTime, quarantineInitiator, nonce, paused] = await Promise.all([
+      const [
+        state, owner, guardian, counterparty, commitmentHash,
+        lockDuration, lockTimestamp, refundDelay, depositedEthAmount,
+        quarantineEndTime, quarantineInitiator, nonce, paused,
+        upgradeTimelock, pendingImplementation
+      ] = await Promise.all([
         c.currentState(), c.owner(), c.guardian(), c.counterparty(), c.commitmentHash(),
         c.lockDuration(), c.lockTimestamp(), c.refundDelay(), c.depositedEthAmount(),
-        c.quarantineEndTime(), c.quarantineInitiator(), c.nonce(), c.paused()
+        c.quarantineEndTime(), c.quarantineInitiator(), c.nonce(), c.paused(),
+        c.upgradeTimelock(), c.pendingImplementation()
       ]);
       const balance = await p.getBalance(address);
-      setVaultState({ state: Number(state), owner, guardian, counterparty, commitmentHash, lockDuration: Number(lockDuration), lockTimestamp: Number(lockTimestamp), refundDelay: Number(refundDelay), depositedEthAmount, quarantineEndTime: Number(quarantineEndTime), quarantineInitiator, nonce: Number(nonce), paused, balance });
+      setVaultState({
+        state: Number(state), owner, guardian, counterparty, commitmentHash,
+        lockDuration: Number(lockDuration), lockTimestamp: Number(lockTimestamp),
+        refundDelay: Number(refundDelay), depositedEthAmount,
+        quarantineEndTime: Number(quarantineEndTime), quarantineInitiator,
+        nonce: Number(nonce), paused, balance,
+        upgradeTimelock: Number(upgradeTimelock), pendingImplementation
+      });
       if (s) setVault(new ethers.Contract(address, VAULT_ABI, s));
     } catch (err: any) {
       setTxStatus({ type: "error", msg: "Failed to load vault: " + (err?.reason || err?.message || String(err)) });
@@ -117,6 +141,7 @@ export default function App() {
     }
   };
 
+  // Core handlers
   const handleDeposit = () => executeTx(() => vault!.deposit({ value: ethers.parseEther(depositAmount) }), "Deposit");
   const handleLock = () => executeTx(() => vault!.lock(), "Lock");
   const handleInitiateExecution = () => executeTx(() => vault!.initiateExecution(ethers.encodeBytes32String(secret)), "Initiate Execution");
@@ -131,8 +156,57 @@ export default function App() {
   const handleUnpause = () => executeTx(() => vault!.unpause(), "Unpause");
   const handleScheduleUpgrade = () => executeTx(() => vault!.scheduleUpgrade(newImpl), "Schedule Upgrade");
 
-  // ─── AI Agent functions ────────────────────────────────────────────────────
+  // recoverAccount — owner signs first via MetaMask, then guardian sig is pasted manually
+  const handleSignRecovery = async () => {
+    if (!signer || !vaultState) return;
+    setLoading(true);
+    setTxStatus(null);
+    try {
+      const deadline = Math.floor(Date.now() / 1000) + Number(recoverDeadlineHours) * 3600;
+      const domain = {
+        name: "SecureVault",
+        version: "1",
+        chainId: (await provider!.getNetwork()).chainId,
+        verifyingContract: vaultAddress as `0x${string}`,
+      };
+      const types = {
+        Recovery: [
+          { name: "newOwner", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+        ],
+      };
+      const value = { newOwner: recoverNewOwner, nonce: BigInt(vaultState.nonce), deadline: BigInt(deadline) };
+      const sig = await signer.signTypedData(domain, types, value);
+      setRecoverOwnerSig(sig);
+      setTxStatus({ type: "success", msg: `Owner signature generated. Deadline: ${new Date(deadline * 1000).toLocaleString()}` });
+    } catch (err: any) {
+      setTxStatus({ type: "error", msg: "Sign failed: " + (err?.message || String(err)) });
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  const handleRecoverAccount = () => {
+    const deadline = Math.floor(Date.now() / 1000) + Number(recoverDeadlineHours) * 3600;
+    executeTx(() => vault!.recoverAccount(recoverNewOwner, deadline, recoverOwnerSig, recoverGuardianSig), "Recover Account");
+  };
+
+  // assertFundIntegrity
+  const handleAssertIntegrity = async () => {
+    if (!vault) return;
+    setIntegrityLoading(true);
+    try {
+      await vault.assertFundIntegrity();
+      setIntegrityStatus("ok");
+    } catch {
+      setIntegrityStatus("fail");
+    } finally {
+      setIntegrityLoading(false);
+    }
+  };
+
+  // AI handlers
   const buildVaultPayload = () => {
     if (!vaultState) return null;
     return {
@@ -163,8 +237,7 @@ export default function App() {
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setAuditResult(data);
+      setAuditResult(await res.json());
       setAuditOpen(true);
     } catch (err: any) {
       setTxStatus({ type: "error", msg: "AI analysis failed: " + err.message });
@@ -196,12 +269,10 @@ export default function App() {
     }
   };
 
-  // ──────────────────────────────────────────────────────────────────────────
-
+  // Helpers
   const isOwner = vaultState && account && vaultState.owner.toLowerCase() === account.toLowerCase();
   const isCounterparty = vaultState && account && vaultState.counterparty.toLowerCase() === account.toLowerCase();
-  const isGuardian = vaultState && account && vaultState.guardian.toLowerCase() === account.toLowerCase();
-  const shortAddr = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`;
+  const shortAddr = (a: string) => a ? `${a.slice(0, 6)}...${a.slice(-4)}` : "—";
   const formatEth = (v: bigint) => ethers.formatEther(v);
   const formatTime = (ts: number) => ts === 0 ? "—" : new Date(ts * 1000).toLocaleString();
   const timeLeft = (ts: number) => {
@@ -212,23 +283,23 @@ export default function App() {
     const m = Math.floor((diff % 3600) / 60);
     return `${h}h ${m}m`;
   };
-
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     setCopied(label);
     setTimeout(() => setCopied(""), 1500);
   };
+  const statusColor = (s: string) => s === "ok" ? "#10b981" : s === "warning" ? "#f59e0b" : "#ef4444";
+  const priorityColor = (p: string) => p === "high" ? "#ef4444" : p === "medium" ? "#f59e0b" : "#6b7280";
 
   useEffect(() => {
     if (vaultAddress && provider) loadVault(vaultAddress);
   }, [provider, signer, loadVault]);
 
-  const statusColor = (s: string) => s === "ok" ? "#10b981" : s === "warning" ? "#f59e0b" : "#ef4444";
-  const priorityColor = (p: string) => p === "high" ? "#ef4444" : p === "medium" ? "#f59e0b" : "#6b7280";
+  // ─── UI Components ────────────────────────────────────────────────────────
 
   const StateBadge = ({ state }: { state: number }) => (
     <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider"
-      style={{ background: `linear-gradient(135deg, ${STATE_COLORS[state]}15, ${STATE_COLORS[state]}08)`, color: STATE_COLORS[state], border: `1px solid ${STATE_COLORS[state]}30`, boxShadow: `0 0 20px ${STATE_COLORS[state]}10` }}>
+      style={{ background: `linear-gradient(135deg, ${STATE_COLORS[state]}15, ${STATE_COLORS[state]}08)`, color: STATE_COLORS[state], border: `1px solid ${STATE_COLORS[state]}30` }}>
       <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: STATE_COLORS[state] }} />
       {STATES[state]}
     </span>
@@ -258,7 +329,7 @@ export default function App() {
     </GlassCard>
   );
 
-  const Input = ({ value, onChange, placeholder, type = "text" }: {
+  const Inp = ({ value, onChange, placeholder, type = "text" }: {
     value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; placeholder: string; type?: string;
   }) => (
     <input type={type} value={value} onChange={onChange} placeholder={placeholder}
@@ -266,8 +337,9 @@ export default function App() {
     />
   );
 
-  const Button = ({ onClick, disabled, children, variant = "primary", className = "" }: {
-    onClick: () => void; disabled?: boolean; children: React.ReactNode; variant?: "primary" | "danger" | "ghost" | "success" | "amber" | "purple" | "indigo"; className?: string;
+  const Btn = ({ onClick, disabled, children, variant = "primary", className = "" }: {
+    onClick: () => void; disabled?: boolean; children: React.ReactNode;
+    variant?: "primary" | "danger" | "ghost" | "success" | "amber" | "purple" | "indigo" | "teal"; className?: string;
   }) => {
     const variants: Record<string, string> = {
       primary: "bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 shadow-lg shadow-blue-500/20",
@@ -277,10 +349,11 @@ export default function App() {
       amber: "bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 shadow-lg shadow-amber-500/20",
       purple: "bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 shadow-lg shadow-purple-500/20",
       indigo: "bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 shadow-lg shadow-indigo-500/20",
+      teal: "bg-gradient-to-r from-teal-600 to-teal-500 hover:from-teal-500 hover:to-teal-400 shadow-lg shadow-teal-500/20",
     };
     return (
       <button onClick={onClick} disabled={disabled || loading}
-        className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none ${variants[variant]} ${className}`}>
+        className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed ${variants[variant]} ${className}`}>
         {loading ? (
           <span className="flex items-center justify-center gap-2">
             <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -291,8 +364,8 @@ export default function App() {
     );
   };
 
-  const RoleCard = ({ label, addr, color, isYou }: { label: string; addr: string; color: string; isYou: boolean }) => (
-    <div className={`p-4 rounded-xl border transition-all duration-300 ${isYou ? "border-blue-500/40 bg-blue-500/5 shadow-lg shadow-blue-500/5" : "border-white/5 bg-white/[0.02]"}`}>
+  const RoleCard = ({ label, addr, isYou }: { label: string; addr: string; isYou: boolean }) => (
+    <div className={`p-4 rounded-xl border transition-all duration-300 ${isYou ? "border-blue-500/40 bg-blue-500/5" : "border-white/5 bg-white/[0.02]"}`}>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</span>
         {isYou && (
@@ -311,14 +384,16 @@ export default function App() {
     </div>
   );
 
+  // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen bg-[#080b14] text-white font-sans relative overflow-hidden">
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-blue-600/5 rounded-full blur-[120px]" />
         <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[120px]" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-indigo-600/3 rounded-full blur-[150px]" />
       </div>
 
+      {/* Header */}
       <header className="relative border-b border-white/5 bg-[#080b14]/80 backdrop-blur-2xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -337,10 +412,11 @@ export default function App() {
                   <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
                   <span className="text-xs font-mono text-slate-300">{shortAddr(account)}</span>
                 </div>
-                <button onClick={disconnect} className="text-xs text-slate-500 hover:text-red-400 transition-colors duration-200">Disconnect</button>
+                <button onClick={disconnect} className="text-xs text-slate-500 hover:text-red-400 transition-colors">Disconnect</button>
               </div>
             ) : (
-              <button onClick={connectWallet} className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95 text-white" style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.3)" }}>
+              <button onClick={connectWallet} className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-white active:scale-95"
+                style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37,99,235,0.3)" }}>
                 <Wallet className="w-4 h-4" /> Connect Wallet
               </button>
             )}
@@ -349,22 +425,25 @@ export default function App() {
       </header>
 
       <main className="relative max-w-7xl mx-auto px-6 py-10">
+
+        {/* Vault address input */}
         <GlassCard className="mb-8" hover={false}>
           <label className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3 block">Vault Contract Address</label>
           <div className="flex gap-3">
-            <input value={vaultAddress} onChange={(e) => setVaultAddress(e.target.value)} placeholder="0x..."
+            <input value={vaultAddress} onChange={e => setVaultAddress(e.target.value)} placeholder="0x..."
               className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl font-mono text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
             />
             <button onClick={() => vaultAddress && loadVault(vaultAddress)}
-              className="px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95 text-white"
-              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.2)" }}>
+              className="px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white active:scale-95"
+              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)" }}>
               Load
             </button>
           </div>
         </GlassCard>
 
+        {/* Tx status */}
         {txStatus && (
-          <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${txStatus.type === "success" ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}>
+          <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 ${txStatus.type === "success" ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}>
             {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertTriangle className="w-5 h-5 shrink-0" />}
             <span className="text-sm font-medium">{txStatus.msg}</span>
           </div>
@@ -372,6 +451,7 @@ export default function App() {
 
         {vaultState && (
           <>
+            {/* Stats row */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               <GlassCard className="!p-4">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">State</p>
@@ -393,23 +473,25 @@ export default function App() {
               </GlassCard>
             </div>
 
+            {/* Roles */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
               {[
-                { label: "Owner", addr: vaultState.owner, color: "#3b82f6" },
-                { label: "Guardian", addr: vaultState.guardian, color: "#a855f7" },
-                { label: "Counterparty", addr: vaultState.counterparty, color: "#10b981" }
+                { label: "Owner", addr: vaultState.owner },
+                { label: "Guardian", addr: vaultState.guardian },
+                { label: "Counterparty", addr: vaultState.counterparty },
               ].map(r => (
-                <RoleCard key={r.label} label={r.label} addr={r.addr} color={r.color} isYou={!!(account && r.addr.toLowerCase() === account)} />
+                <RoleCard key={r.label} label={r.label} addr={r.addr} isYou={!!(account && r.addr.toLowerCase() === account.toLowerCase())} />
               ))}
             </div>
 
+            {/* Timing row */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               {[
                 { label: "Lock Duration", value: `${vaultState.lockDuration}s (${Math.floor(vaultState.lockDuration / 3600)}h)`, icon: Lock },
                 { label: "Lock Timestamp", value: formatTime(vaultState.lockTimestamp), icon: Clock },
                 { label: "Refund Delay", value: `${vaultState.refundDelay}s (${Math.floor(vaultState.refundDelay / 3600)}h)`, icon: RotateCcw },
-                { label: "Deposited", value: `${formatEth(vaultState.depositedEthAmount)} ETH`, icon: Coins }
-              ].map((item) => (
+                { label: "Deposited", value: `${formatEth(vaultState.depositedEthAmount)} ETH`, icon: Coins },
+              ].map(item => (
                 <GlassCard key={item.label} className="!p-4">
                   <div className="flex items-center gap-2 mb-1.5">
                     <item.icon className="w-3.5 h-3.5 text-slate-600" />
@@ -421,7 +503,7 @@ export default function App() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/5 p-1 rounded-xl w-fit">
+            <div className="flex flex-wrap gap-1 mb-8 bg-white/[0.03] border border-white/5 p-1 rounded-xl w-fit">
               {[
                 { key: "actions" as const, label: "Actions", icon: Zap },
                 { key: "tokens" as const, label: "Tokens", icon: Coins },
@@ -435,80 +517,146 @@ export default function App() {
               ))}
             </div>
 
+            {/* ── ACTIONS TAB ── */}
             {activeTab === "actions" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <ActionCard icon={Send} iconColor="#3b82f6" title="Deposit ETH" subtitle="State: INIT → FUNDED">
-                  <Input value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Amount in ETH" />
-                  <Button onClick={handleDeposit} disabled={vaultState.state !== 0}>Deposit ETH</Button>
+                  <Inp value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Amount in ETH" />
+                  <Btn onClick={handleDeposit} disabled={vaultState.state !== 0}>Deposit ETH</Btn>
                 </ActionCard>
+
                 <ActionCard icon={Lock} iconColor="#f59e0b" title="Lock Vault" subtitle="State: FUNDED → LOCKED">
-                  <p className="text-xs text-slate-500 mb-4">Locks vault for {Math.floor(vaultState.lockDuration / 3600)} hours</p>
-                  <Button onClick={handleLock} disabled={vaultState.state !== 1 || !isOwner} variant="amber">{isOwner ? "Lock Vault" : "Owner Only"}</Button>
+                  <p className="text-xs text-slate-500 mb-4">Locks vault for {Math.floor(vaultState.lockDuration / 3600)}h</p>
+                  <Btn onClick={handleLock} disabled={vaultState.state !== 1 || !isOwner} variant="amber">
+                    {isOwner ? "Lock Vault" : "Owner Only"}
+                  </Btn>
                 </ActionCard>
+
                 <ActionCard icon={Key} iconColor="#f97316" title="Initiate Execution" subtitle="State: LOCKED → EXECUTION_PENDING">
                   <div className="relative mb-3">
-                    <input type={secretVisible ? "text" : "password"} value={secret} onChange={e => setSecret(e.target.value)} placeholder="Enter secret to reveal"
-                      className="w-full px-4 py-3 pr-10 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all duration-200"
+                    <input type={secretVisible ? "text" : "password"} value={secret} onChange={e => setSecret(e.target.value)}
+                      placeholder="Enter secret to reveal"
+                      className="w-full px-4 py-3 pr-10 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 outline-none focus:border-orange-500/50 transition-all duration-200"
                     />
-                    <button type="button" onClick={() => setSecretVisible(!secretVisible)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                    <button type="button" onClick={() => setSecretVisible(!secretVisible)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400">
                       {secretVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                  <Button onClick={handleInitiateExecution} disabled={vaultState.state !== 2} variant="amber">Reveal Secret</Button>
+                  <Btn onClick={handleInitiateExecution} disabled={vaultState.state !== 2} variant="amber">Reveal Secret</Btn>
                 </ActionCard>
+
                 <ActionCard icon={CheckCircle2} iconColor="#10b981" title="Execute" subtitle="State: EXECUTION_PENDING → EXECUTED">
                   <p className="text-xs text-slate-500 mb-4">Sends {formatEth(vaultState.depositedEthAmount)} ETH to counterparty</p>
-                  <Button onClick={handleExecute} disabled={vaultState.state !== 3 || (!isOwner && !isCounterparty)} variant="success">
+                  <Btn onClick={handleExecute} disabled={vaultState.state !== 3 || (!isOwner && !isCounterparty)} variant="success">
                     {isOwner || isCounterparty ? "Execute Transfer" : "Owner/Counterparty Only"}
-                  </Button>
+                  </Btn>
                 </ActionCard>
-                <ActionCard icon={RotateCcw} iconColor="#a855f7" title="Refund" subtitle="State: FUNDED/LOCKED → REFUNDED">
-                  <p className="text-xs text-slate-500 mb-4">Returns ETH to owner. Available from FUNDED or after lock + delay.</p>
-                  <Button onClick={handleRefund} disabled={!isOwner || (vaultState.state !== 1 && vaultState.state !== 2)} variant="purple">
+
+                <ActionCard icon={RotateCcw} iconColor="#a855f7" title="Refund" subtitle="Returns ETH to owner">
+                  <p className="text-xs text-slate-500 mb-4">Available from FUNDED or after lock + refund delay.</p>
+                  <Btn onClick={handleRefund} disabled={!isOwner || (vaultState.state !== 1 && vaultState.state !== 2)} variant="purple">
                     {isOwner ? "Refund ETH" : "Owner Only"}
-                  </Button>
+                  </Btn>
                 </ActionCard>
-                <ActionCard icon={AlertTriangle} iconColor="#ef4444" title="Quarantine" subtitle="Pauses vault for 12h (0.01 ETH stake)">
+
+                <ActionCard icon={AlertTriangle} iconColor="#ef4444" title="Quarantine" subtitle="Pause vault for 12h (0.01 ETH stake)">
                   <div className="flex gap-3">
-                    <Button onClick={handleQuarantine} variant="danger" className="!flex-1">Activate</Button>
-                    <Button onClick={handleReleaseQuarantine} disabled={!isOwner || vaultState.quarantineEndTime <= Date.now() / 1000} variant="ghost" className="!flex-1">Release</Button>
+                    <Btn onClick={handleQuarantine} variant="danger" className="!flex-1">Activate</Btn>
+                    <Btn onClick={handleReleaseQuarantine} disabled={!isOwner || vaultState.quarantineEndTime <= Date.now() / 1000} variant="ghost" className="!flex-1">Release</Btn>
                   </div>
                 </ActionCard>
               </div>
             )}
 
+            {/* ── TOKENS TAB ── */}
             {activeTab === "tokens" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <ActionCard icon={Coins} iconColor="#3b82f6" title="Deposit ERC20" subtitle="Transfer tokens to vault">
-                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token contract address" />
-                  <Input value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} placeholder="Amount" />
-                  <Button onClick={handleDepositTokens}>Deposit Tokens</Button>
+                  <Inp value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token contract address" />
+                  <Inp value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} placeholder="Amount" />
+                  <Btn onClick={handleDepositTokens}>Deposit Tokens</Btn>
                 </ActionCard>
+
                 <ActionCard icon={RefreshCw} iconColor="#10b981" title="Recover ERC20" subtitle="After vault closed (EXECUTED/REFUNDED)">
-                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token address" />
-                  <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
-                  <Button onClick={handleRecoverTokens} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="success">Recover Tokens</Button>
+                  <Inp value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token address" />
+                  <Inp value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
+                  <Btn onClick={handleRecoverTokens} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="success">
+                    Recover Tokens
+                  </Btn>
                 </ActionCard>
+
                 <ActionCard icon={ShieldCheck} iconColor="#ec4899" title="Recover NFT" subtitle="Recover ERC721 after vault closed">
-                  <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="NFT contract address" />
-                  <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
-                  <Input value={nftId} onChange={e => setNftId(e.target.value)} placeholder="Token ID" />
-                  <Button onClick={handleRecoverNFT} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="danger">Recover NFT</Button>
+                  <Inp value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="NFT contract address" />
+                  <Inp value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
+                  <Inp value={nftId} onChange={e => setNftId(e.target.value)} placeholder="Token ID" />
+                  <Btn onClick={handleRecoverNFT} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="danger">
+                    Recover NFT
+                  </Btn>
                 </ActionCard>
               </div>
             )}
 
+            {/* ── ADMIN TAB ── */}
             {activeTab === "admin" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <ActionCard icon={vaultState.paused ? Play : Pause} iconColor={vaultState.paused ? "#10b981" : "#ef4444"} title={vaultState.paused ? "Unpause" : "Pause"} subtitle="Emergency stop for all operations">
-                  <Button onClick={vaultState.paused ? handleUnpause : handlePause} disabled={!isOwner} variant={vaultState.paused ? "success" : "danger"}>
+
+                {/* Pause/Unpause */}
+                <ActionCard icon={vaultState.paused ? Play : Pause} iconColor={vaultState.paused ? "#10b981" : "#ef4444"}
+                  title={vaultState.paused ? "Unpause" : "Pause"} subtitle="Emergency stop for all operations">
+                  <Btn onClick={vaultState.paused ? handleUnpause : handlePause} disabled={!isOwner} variant={vaultState.paused ? "success" : "danger"}>
                     {vaultState.paused ? "Resume Vault" : "Pause Vault"}
-                  </Button>
+                  </Btn>
                 </ActionCard>
+
+                {/* Schedule Upgrade */}
                 <ActionCard icon={Zap} iconColor="#6366f1" title="Schedule Upgrade" subtitle="48h timelock required">
-                  <Input value={newImpl} onChange={e => setNewImpl(e.target.value)} placeholder="New implementation address" />
-                  <Button onClick={handleScheduleUpgrade} disabled={!isOwner} variant="indigo">Schedule Upgrade</Button>
+                  <Inp value={newImpl} onChange={e => setNewImpl(e.target.value)} placeholder="New implementation address" />
+                  <Btn onClick={handleScheduleUpgrade} disabled={!isOwner} variant="indigo">Schedule Upgrade</Btn>
+                  {vaultState.upgradeTimelock > 0 && (
+                    <div className="mt-3 p-3 rounded-xl bg-white/[0.02] border border-white/5 flex flex-col gap-1">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Pending Upgrade</p>
+                      <p className="font-mono text-xs text-slate-400 break-all">{vaultState.pendingImplementation}</p>
+                      <p className="text-[11px] text-slate-500">Unlocks: {formatTime(vaultState.upgradeTimelock)}</p>
+                    </div>
+                  )}
                 </ActionCard>
+
+                {/* Assert Fund Integrity */}
+                <ActionCard icon={Activity} iconColor="#14b8a6" title="Assert Fund Integrity" subtitle="Verify vault balances are consistent">
+                  <Btn onClick={handleAssertIntegrity} disabled={integrityLoading} variant="teal">
+                    {integrityLoading ? "Checking..." : "Run Integrity Check"}
+                  </Btn>
+                  {integrityStatus !== "idle" && (
+                    <div className={`mt-3 p-3 rounded-xl border flex items-center gap-2 ${integrityStatus === "ok" ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border-red-500/20 text-red-300"}`}>
+                      {integrityStatus === "ok" ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                      <span className="text-xs font-bold">{integrityStatus === "ok" ? "Integrity OK — funds match state" : "INTEGRITY VIOLATION detected"}</span>
+                    </div>
+                  )}
+                </ActionCard>
+
+                {/* Recover Account (EIP-712) */}
+                <ActionCard icon={UserCheck} iconColor="#f59e0b" title="Recover Account" subtitle="EIP-712 2-of-2: owner + guardian signatures">
+                  <Inp value={recoverNewOwner} onChange={e => setRecoverNewOwner(e.target.value)} placeholder="New owner address" />
+                  <Inp value={recoverDeadlineHours} onChange={e => setRecoverDeadlineHours(e.target.value)} placeholder="Deadline (hours from now)" />
+                  <Btn onClick={handleSignRecovery} disabled={!signer || !recoverNewOwner} variant="amber" className="mb-3">
+                    Step 1 — Sign as Owner (MetaMask)
+                  </Btn>
+                  {recoverOwnerSig && (
+                    <div className="mb-3 p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                      <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-1">Owner Signature</p>
+                      <p className="font-mono text-[10px] text-slate-400 break-all">{recoverOwnerSig.slice(0, 40)}...</p>
+                      <button onClick={() => copyToClipboard(recoverOwnerSig, "ownerSig")} className="mt-1 text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1">
+                        <Copy className="w-3 h-3" /> {copied === "ownerSig" ? "Copied!" : "Copy full signature"}
+                      </button>
+                    </div>
+                  )}
+                  <Inp value={recoverGuardianSig} onChange={e => setRecoverGuardianSig(e.target.value)} placeholder="Paste guardian signature here" />
+                  <Btn onClick={handleRecoverAccount} disabled={!isOwner || !recoverOwnerSig || !recoverGuardianSig || !recoverNewOwner} variant="primary">
+                    Step 2 — Submit Recovery
+                  </Btn>
+                </ActionCard>
+
+                {/* Vault Info */}
                 <GlassCard className="md:col-span-2" hover={false}>
                   <div className="flex items-center gap-2 mb-4">
                     <ShieldCheck className="w-4 h-4 text-blue-400" />
@@ -516,11 +664,15 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {[
-                      { label: "Address", value: vaultAddress },
+                      { label: "Address", value: shortAddr(vaultAddress) },
                       { label: "Commitment Hash", value: shortAddr(vaultState.commitmentHash) },
-                      { label: "Nonce", value: vaultState.nonce },
-                      { label: "Refund Delay", value: `${Math.floor(vaultState.refundDelay / 3600)}h` }
-                    ].map((item) => (
+                      { label: "Nonce", value: String(vaultState.nonce) },
+                      { label: "Refund Delay", value: `${Math.floor(vaultState.refundDelay / 3600)}h` },
+                      { label: "Quarantine Initiator", value: shortAddr(vaultState.quarantineInitiator) },
+                      { label: "Upgrade Timelock", value: vaultState.upgradeTimelock > 0 ? formatTime(vaultState.upgradeTimelock) : "—" },
+                      { label: "Pending Impl", value: shortAddr(vaultState.pendingImplementation) },
+                      { label: "QUARANTINE_STAKE", value: "0.01 ETH" },
+                    ].map(item => (
                       <div key={item.label}>
                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{item.label}</span>
                         <p className="font-mono text-xs text-slate-300 mt-1 break-all">{item.value}</p>
@@ -531,11 +683,11 @@ export default function App() {
               </div>
             )}
 
-            {/* ─── AI AGENT TAB ─────────────────────────────────────────────── */}
+            {/* ── AI AGENT TAB ── */}
             {activeTab === "ai" && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-                {/* Audit Panel */}
+                {/* Audit */}
                 <GlassCard hover={false} className="flex flex-col gap-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #7c3aed20, #7c3aed08)", border: "1px solid #7c3aed20" }}>
@@ -547,11 +699,10 @@ export default function App() {
                     </div>
                   </div>
                   <button onClick={handleAnalyze} disabled={auditLoading}
-                    className="w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-lg shadow-purple-500/20">
+                    className="w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white disabled:opacity-40 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-lg shadow-purple-500/20">
                     {auditLoading ? (
                       <span className="flex items-center justify-center gap-2">
-                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        Analyzing...
+                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Analyzing...
                       </span>
                     ) : "Run Security Audit"}
                   </button>
@@ -562,40 +713,30 @@ export default function App() {
                         <span className="text-xs font-bold uppercase tracking-widest" style={{ color: statusColor(auditResult.status) }}>
                           ● {auditResult.status.toUpperCase()}
                         </span>
-                        <button onClick={() => setAuditOpen(!auditOpen)} className="text-slate-500 hover:text-white transition-colors">
+                        <button onClick={() => setAuditOpen(!auditOpen)} className="text-slate-500 hover:text-white">
                           {auditOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         </button>
                       </div>
                       <p className="text-sm text-slate-300">{auditResult.summary}</p>
-
                       {auditOpen && (
                         <>
                           <div className="rounded-xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-3">
-                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">State</p>
+                            <p className="text-[10px] font-bold text-slate-500 uppercase">State</p>
                             <p className="text-xs text-slate-300">{auditResult.analysis.state}</p>
-                            {auditResult.analysis.risks.length > 0 && (
-                              <>
-                                <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest">Risks</p>
-                                {auditResult.analysis.risks.map((r, i) => (
-                                  <p key={i} className="text-xs text-slate-400">• {r}</p>
-                                ))}
-                              </>
-                            )}
-                            {auditResult.analysis.recommendations.length > 0 && (
-                              <>
-                                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Recommendations</p>
-                                {auditResult.analysis.recommendations.map((r, i) => (
-                                  <p key={i} className="text-xs text-slate-400">• {r}</p>
-                                ))}
-                              </>
-                            )}
-                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Gas Estimate</p>
+                            {auditResult.analysis.risks.length > 0 && (<>
+                              <p className="text-[10px] font-bold text-red-400 uppercase">Risks</p>
+                              {auditResult.analysis.risks.map((r, i) => <p key={i} className="text-xs text-slate-400">• {r}</p>)}
+                            </>)}
+                            {auditResult.analysis.recommendations.length > 0 && (<>
+                              <p className="text-[10px] font-bold text-emerald-400 uppercase">Recommendations</p>
+                              {auditResult.analysis.recommendations.map((r, i) => <p key={i} className="text-xs text-slate-400">• {r}</p>)}
+                            </>)}
+                            <p className="text-[10px] font-bold text-slate-500 uppercase mt-1">Gas Estimate</p>
                             <p className="text-xs font-mono text-slate-300">{auditResult.analysis.gas_estimate}</p>
                           </div>
-
                           {auditResult.actions.length > 0 && (
                             <div className="flex flex-col gap-2">
-                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Suggested Actions</p>
+                              <p className="text-[10px] font-bold text-slate-500 uppercase">Suggested Actions</p>
                               {auditResult.actions.map((a, i) => (
                                 <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/5">
                                   <span className="text-[9px] font-bold px-2 py-0.5 rounded-full mt-0.5" style={{ background: `${priorityColor(a.priority)}20`, color: priorityColor(a.priority) }}>
@@ -615,7 +756,7 @@ export default function App() {
                   )}
                 </GlassCard>
 
-                {/* Chat Panel */}
+                {/* Chat */}
                 <GlassCard hover={false} className="flex flex-col gap-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #2563eb20, #2563eb08)", border: "1px solid #2563eb20" }}>
@@ -626,13 +767,11 @@ export default function App() {
                       <p className="text-[11px] text-slate-500">Smart contract security advisor</p>
                     </div>
                     {chatHistory.length > 0 && (
-                      <button onClick={() => setChatHistory([])} className="p-1.5 rounded-lg hover:bg-white/5 transition-colors text-slate-600 hover:text-red-400">
+                      <button onClick={() => setChatHistory([])} className="p-1.5 rounded-lg hover:bg-white/5 text-slate-600 hover:text-red-400">
                         <X className="w-4 h-4" />
                       </button>
                     )}
                   </div>
-
-                  {/* Messages */}
                   <div className="flex flex-col gap-3 max-h-72 overflow-y-auto pr-1">
                     {chatHistory.length === 0 && (
                       <div className="text-center py-8">
@@ -651,41 +790,37 @@ export default function App() {
                       <div className="flex justify-start">
                         <div className="px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/5">
                           <span className="flex items-center gap-2 text-xs text-slate-500">
-                            <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
-                            Thinking...
+                            <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" /> Thinking...
                           </span>
                         </div>
                       </div>
                     )}
                     <div ref={chatEndRef} />
                   </div>
-
-                  {/* Input */}
                   <div className="flex gap-2 mt-auto">
-                    <input
-                      value={chatInput}
-                      onChange={e => setChatInput(e.target.value)}
+                    <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                       onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleChat()}
                       placeholder="Ask about vault security..."
-                      className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
+                      className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 transition-all duration-200"
                     />
                     <button onClick={handleChat} disabled={chatLoading || !chatInput.trim()}
-                      className="px-4 py-3 rounded-xl text-white transition-all duration-200 active:scale-95 disabled:opacity-40"
+                      className="px-4 py-3 rounded-xl text-white active:scale-95 disabled:opacity-40"
                       style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)" }}>
                       <Send className="w-4 h-4" />
                     </button>
                   </div>
                 </GlassCard>
-
               </div>
             )}
           </>
         )}
 
+        {/* Empty state */}
         {!vaultState && (
-          <div className="text-center py-32 relative">
+          <div className="text-center py-32">
             <div className="relative inline-flex mb-8">
-              <div className="w-24 h-24 rounded-3xl flex items-center justify-center relative" style={{ background: "linear-gradient(135deg, rgba(37, 99, 235, 0.15), rgba(124, 58, 237, 0.15))", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div className="w-24 h-24 rounded-3xl flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, rgba(37,99,235,0.15), rgba(124,58,237,0.15))", border: "1px solid rgba(255,255,255,0.08)" }}>
                 <Shield className="w-12 h-12 text-blue-400" />
               </div>
               <div className="absolute -inset-4 rounded-[28px] border border-white/[0.03] animate-pulse" />
