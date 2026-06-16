@@ -4,12 +4,20 @@ import { VAULT_ADDRESS, VAULT_ABI } from "./config";
 import {
   Shield, Lock, Unlock, Send, RotateCcw, AlertTriangle, CheckCircle2,
   Wallet, Copy, Pause, Play, Key, ShieldAlert, Clock,
-  Coins, RefreshCw, Zap, Eye, EyeOff, ShieldCheck
+  Coins, RefreshCw, Zap, Eye, EyeOff, ShieldCheck, Bot, MessageSquare, X, ChevronDown, ChevronUp
 } from "lucide-react";
 
 const STATES = ["INIT", "FUNDED", "LOCKED", "EXECUTION_PENDING", "EXECUTED", "REFUNDED"];
 const STATE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#f97316", "#10b981", "#8b5cf6"];
 const QUARANTINE_STAKE = ethers.parseEther("0.01");
+
+interface ChatMessage { role: "user" | "assistant"; content: string; }
+interface AuditResult {
+  status: "ok" | "warning" | "critical";
+  summary: string;
+  analysis: { state: string; risks: string[]; recommendations: string[]; gas_estimate: string };
+  actions: { name: string; description: string; priority: string }[];
+}
 
 export default function App() {
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
@@ -20,7 +28,7 @@ export default function App() {
   const [vaultState, setVaultState] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [txStatus, setTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
-  const [activeTab, setActiveTab] = useState<"actions" | "tokens" | "admin">("actions");
+  const [activeTab, setActiveTab] = useState<"actions" | "tokens" | "admin" | "ai">("actions");
   const [depositAmount, setDepositAmount] = useState("");
   const [secret, setSecret] = useState("");
   const [secretVisible, setSecretVisible] = useState(false);
@@ -31,11 +39,21 @@ export default function App() {
   const [newImpl, setNewImpl] = useState("");
   const [copied, setCopied] = useState("");
 
+  // AI Agent state
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [auditResult, setAuditResult] = useState<AuditResult | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
   const providerRef = useRef<ethers.BrowserProvider | null>(null);
   const signerRef = useRef<ethers.Signer | null>(null);
   const vaultAddressRef = useRef(vaultAddress);
 
   useEffect(() => { vaultAddressRef.current = vaultAddress; }, [vaultAddress]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
 
   const connectWallet = async () => {
     const eth = (window as any).ethereum;
@@ -113,6 +131,73 @@ export default function App() {
   const handleUnpause = () => executeTx(() => vault!.unpause(), "Unpause");
   const handleScheduleUpgrade = () => executeTx(() => vault!.scheduleUpgrade(newImpl), "Schedule Upgrade");
 
+  // ─── AI Agent functions ────────────────────────────────────────────────────
+
+  const buildVaultPayload = () => {
+    if (!vaultState) return null;
+    return {
+      address: vaultAddress,
+      currentState: STATES[vaultState.state],
+      owner: vaultState.owner,
+      guardian: vaultState.guardian,
+      counterparty: vaultState.counterparty,
+      balance: ethers.formatEther(vaultState.balance),
+      lockDuration: String(vaultState.lockDuration),
+      lockTimestamp: String(vaultState.lockTimestamp),
+      refundDelay: String(vaultState.refundDelay),
+      quarantineEndTime: String(vaultState.quarantineEndTime),
+      nonce: String(vaultState.nonce),
+      depositedEthAmount: ethers.formatEther(vaultState.depositedEthAmount),
+    };
+  };
+
+  const handleAnalyze = async () => {
+    const payload = buildVaultPayload();
+    if (!payload) return;
+    setAuditLoading(true);
+    setAuditResult(null);
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAuditResult(data);
+      setAuditOpen(true);
+    } catch (err: any) {
+      setTxStatus({ type: "error", msg: "AI analysis failed: " + err.message });
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const handleChat = async () => {
+    if (!chatInput.trim()) return;
+    const userMsg: ChatMessage = { role: "user", content: chatInput.trim() };
+    const newHistory = [...chatHistory, userMsg];
+    setChatHistory(newHistory);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userMsg.content, history: chatHistory }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setChatHistory([...newHistory, { role: "assistant", content: data.reply }]);
+    } catch (err: any) {
+      setChatHistory([...newHistory, { role: "assistant", content: "⚠️ Error: " + err.message }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+
   const isOwner = vaultState && account && vaultState.owner.toLowerCase() === account.toLowerCase();
   const isCounterparty = vaultState && account && vaultState.counterparty.toLowerCase() === account.toLowerCase();
   const isGuardian = vaultState && account && vaultState.guardian.toLowerCase() === account.toLowerCase();
@@ -135,21 +220,15 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (vaultAddress && provider) {
-      loadVault(vaultAddress);
-    }
+    if (vaultAddress && provider) loadVault(vaultAddress);
   }, [provider, signer, loadVault]);
 
+  const statusColor = (s: string) => s === "ok" ? "#10b981" : s === "warning" ? "#f59e0b" : "#ef4444";
+  const priorityColor = (p: string) => p === "high" ? "#ef4444" : p === "medium" ? "#f59e0b" : "#6b7280";
+
   const StateBadge = ({ state }: { state: number }) => (
-    <span
-      className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider"
-      style={{
-        background: `linear-gradient(135deg, ${STATE_COLORS[state]}15, ${STATE_COLORS[state]}08)`,
-        color: STATE_COLORS[state],
-        border: `1px solid ${STATE_COLORS[state]}30`,
-        boxShadow: `0 0 20px ${STATE_COLORS[state]}10`
-      }}
-    >
+    <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider"
+      style={{ background: `linear-gradient(135deg, ${STATE_COLORS[state]}15, ${STATE_COLORS[state]}08)`, color: STATE_COLORS[state], border: `1px solid ${STATE_COLORS[state]}30`, boxShadow: `0 0 20px ${STATE_COLORS[state]}10` }}>
       <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: STATE_COLORS[state] }} />
       {STATES[state]}
     </span>
@@ -182,11 +261,7 @@ export default function App() {
   const Input = ({ value, onChange, placeholder, type = "text" }: {
     value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; placeholder: string; type?: string;
   }) => (
-    <input
-      type={type}
-      value={value}
-      onChange={onChange}
-      placeholder={placeholder}
+    <input type={type} value={value} onChange={onChange} placeholder={placeholder}
       className="w-full px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 mb-3 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
     />
   );
@@ -204,11 +279,8 @@ export default function App() {
       indigo: "bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 shadow-lg shadow-indigo-500/20",
     };
     return (
-      <button
-        onClick={onClick}
-        disabled={disabled || loading}
-        className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none ${variants[variant]} ${className}`}
-      >
+      <button onClick={onClick} disabled={disabled || loading}
+        className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none ${variants[variant]} ${className}`}>
         {loading ? (
           <span className="flex items-center justify-center gap-2">
             <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -280,28 +352,19 @@ export default function App() {
         <GlassCard className="mb-8" hover={false}>
           <label className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-3 block">Vault Contract Address</label>
           <div className="flex gap-3">
-            <input
-              value={vaultAddress}
-              onChange={(e) => setVaultAddress(e.target.value)}
-              placeholder="0x..."
+            <input value={vaultAddress} onChange={(e) => setVaultAddress(e.target.value)} placeholder="0x..."
               className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl font-mono text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
             />
-            <button
-              onClick={() => vaultAddress && loadVault(vaultAddress)}
+            <button onClick={() => vaultAddress && loadVault(vaultAddress)}
               className="px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95 text-white"
-              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.2)" }}
-            >
+              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)", boxShadow: "0 4px 20px rgba(37, 99, 235, 0.2)" }}>
               Load
             </button>
           </div>
         </GlassCard>
 
         {txStatus && (
-          <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${
-            txStatus.type === "success"
-              ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
-              : "bg-red-500/10 border border-red-500/20 text-red-300"
-          }`}>
+          <div className={`mb-6 p-4 rounded-xl flex items-center gap-3 transition-all duration-300 ${txStatus.type === "success" ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-red-500/10 border border-red-500/20 text-red-300"}`}>
             {txStatus.type === "success" ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertTriangle className="w-5 h-5 shrink-0" />}
             <span className="text-sm font-medium">{txStatus.msg}</span>
           </div>
@@ -320,9 +383,7 @@ export default function App() {
               </GlassCard>
               <GlassCard className="!p-4">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Paused</p>
-                <p className={`text-sm font-bold ${vaultState.paused ? "text-red-400" : "text-emerald-400"}`}>
-                  {vaultState.paused ? "YES" : "NO"}
-                </p>
+                <p className={`text-sm font-bold ${vaultState.paused ? "text-red-400" : "text-emerald-400"}`}>{vaultState.paused ? "YES" : "NO"}</p>
               </GlassCard>
               <GlassCard className="!p-4">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Quarantine</p>
@@ -338,13 +399,7 @@ export default function App() {
                 { label: "Guardian", addr: vaultState.guardian, color: "#a855f7" },
                 { label: "Counterparty", addr: vaultState.counterparty, color: "#10b981" }
               ].map(r => (
-                <RoleCard
-                  key={r.label}
-                  label={r.label}
-                  addr={r.addr}
-                  color={r.color}
-                  isYou={!!(account && r.addr.toLowerCase() === account)}
-                />
+                <RoleCard key={r.label} label={r.label} addr={r.addr} color={r.color} isYou={!!(account && r.addr.toLowerCase() === account)} />
               ))}
             </div>
 
@@ -365,21 +420,16 @@ export default function App() {
               ))}
             </div>
 
+            {/* Tabs */}
             <div className="flex gap-1 mb-8 bg-white/[0.03] border border-white/5 p-1 rounded-xl w-fit">
               {[
                 { key: "actions" as const, label: "Actions", icon: Zap },
                 { key: "tokens" as const, label: "Tokens", icon: Coins },
-                { key: "admin" as const, label: "Admin", icon: ShieldAlert }
+                { key: "admin" as const, label: "Admin", icon: ShieldAlert },
+                { key: "ai" as const, label: "AI Agent", icon: Bot },
               ].map(t => (
-                <button
-                  key={t.key}
-                  onClick={() => setActiveTab(t.key)}
-                  className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-200 ${
-                    activeTab === t.key
-                      ? "bg-white/[0.1] text-white shadow-lg"
-                      : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]"
-                  }`}
-                >
+                <button key={t.key} onClick={() => setActiveTab(t.key)}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-200 ${activeTab === t.key ? "bg-white/[0.1] text-white shadow-lg" : "text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]"}`}>
                   <t.icon className="w-4 h-4" /> {t.label}
                 </button>
               ))}
@@ -391,21 +441,13 @@ export default function App() {
                   <Input value={depositAmount} onChange={e => setDepositAmount(e.target.value)} placeholder="Amount in ETH" />
                   <Button onClick={handleDeposit} disabled={vaultState.state !== 0}>Deposit ETH</Button>
                 </ActionCard>
-
                 <ActionCard icon={Lock} iconColor="#f59e0b" title="Lock Vault" subtitle="State: FUNDED → LOCKED">
                   <p className="text-xs text-slate-500 mb-4">Locks vault for {Math.floor(vaultState.lockDuration / 3600)} hours</p>
-                  <Button onClick={handleLock} disabled={vaultState.state !== 1 || !isOwner} variant="amber">
-                    {isOwner ? "Lock Vault" : "Owner Only"}
-                  </Button>
+                  <Button onClick={handleLock} disabled={vaultState.state !== 1 || !isOwner} variant="amber">{isOwner ? "Lock Vault" : "Owner Only"}</Button>
                 </ActionCard>
-
                 <ActionCard icon={Key} iconColor="#f97316" title="Initiate Execution" subtitle="State: LOCKED → EXECUTION_PENDING">
                   <div className="relative mb-3">
-                    <input
-                      type={secretVisible ? "text" : "password"}
-                      value={secret}
-                      onChange={e => setSecret(e.target.value)}
-                      placeholder="Enter secret to reveal"
+                    <input type={secretVisible ? "text" : "password"} value={secret} onChange={e => setSecret(e.target.value)} placeholder="Enter secret to reveal"
                       className="w-full px-4 py-3 pr-10 bg-white/[0.05] border border-white/10 rounded-xl text-sm font-mono text-white placeholder:text-slate-600 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all duration-200"
                     />
                     <button type="button" onClick={() => setSecretVisible(!secretVisible)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
@@ -414,21 +456,18 @@ export default function App() {
                   </div>
                   <Button onClick={handleInitiateExecution} disabled={vaultState.state !== 2} variant="amber">Reveal Secret</Button>
                 </ActionCard>
-
                 <ActionCard icon={CheckCircle2} iconColor="#10b981" title="Execute" subtitle="State: EXECUTION_PENDING → EXECUTED">
                   <p className="text-xs text-slate-500 mb-4">Sends {formatEth(vaultState.depositedEthAmount)} ETH to counterparty</p>
                   <Button onClick={handleExecute} disabled={vaultState.state !== 3 || (!isOwner && !isCounterparty)} variant="success">
                     {isOwner || isCounterparty ? "Execute Transfer" : "Owner/Counterparty Only"}
                   </Button>
                 </ActionCard>
-
                 <ActionCard icon={RotateCcw} iconColor="#a855f7" title="Refund" subtitle="State: FUNDED/LOCKED → REFUNDED">
                   <p className="text-xs text-slate-500 mb-4">Returns ETH to owner. Available from FUNDED or after lock + delay.</p>
                   <Button onClick={handleRefund} disabled={!isOwner || (vaultState.state !== 1 && vaultState.state !== 2)} variant="purple">
                     {isOwner ? "Refund ETH" : "Owner Only"}
                   </Button>
                 </ActionCard>
-
                 <ActionCard icon={AlertTriangle} iconColor="#ef4444" title="Quarantine" subtitle="Pauses vault for 12h (0.01 ETH stake)">
                   <div className="flex gap-3">
                     <Button onClick={handleQuarantine} variant="danger" className="!flex-1">Activate</Button>
@@ -445,13 +484,11 @@ export default function App() {
                   <Input value={tokenAmount} onChange={e => setTokenAmount(e.target.value)} placeholder="Amount" />
                   <Button onClick={handleDepositTokens}>Deposit Tokens</Button>
                 </ActionCard>
-
                 <ActionCard icon={RefreshCw} iconColor="#10b981" title="Recover ERC20" subtitle="After vault closed (EXECUTED/REFUNDED)">
                   <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="Token address" />
                   <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
                   <Button onClick={handleRecoverTokens} disabled={!isOwner || (vaultState.state !== 4 && vaultState.state !== 5)} variant="success">Recover Tokens</Button>
                 </ActionCard>
-
                 <ActionCard icon={ShieldCheck} iconColor="#ec4899" title="Recover NFT" subtitle="Recover ERC721 after vault closed">
                   <Input value={tokenAddress} onChange={e => setTokenAddress(e.target.value)} placeholder="NFT contract address" />
                   <Input value={recoverTo} onChange={e => setRecoverTo(e.target.value)} placeholder="Recover to address" />
@@ -468,12 +505,10 @@ export default function App() {
                     {vaultState.paused ? "Resume Vault" : "Pause Vault"}
                   </Button>
                 </ActionCard>
-
                 <ActionCard icon={Zap} iconColor="#6366f1" title="Schedule Upgrade" subtitle="48h timelock required">
                   <Input value={newImpl} onChange={e => setNewImpl(e.target.value)} placeholder="New implementation address" />
                   <Button onClick={handleScheduleUpgrade} disabled={!isOwner} variant="indigo">Schedule Upgrade</Button>
                 </ActionCard>
-
                 <GlassCard className="md:col-span-2" hover={false}>
                   <div className="flex items-center gap-2 mb-4">
                     <ShieldCheck className="w-4 h-4 text-blue-400" />
@@ -493,6 +528,155 @@ export default function App() {
                     ))}
                   </div>
                 </GlassCard>
+              </div>
+            )}
+
+            {/* ─── AI AGENT TAB ─────────────────────────────────────────────── */}
+            {activeTab === "ai" && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                {/* Audit Panel */}
+                <GlassCard hover={false} className="flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #7c3aed20, #7c3aed08)", border: "1px solid #7c3aed20" }}>
+                      <Bot className="w-5 h-5 text-purple-400" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-white">CubHunter AI Audit</h3>
+                      <p className="text-[11px] text-slate-500">Security analysis of current vault state</p>
+                    </div>
+                  </div>
+                  <button onClick={handleAnalyze} disabled={auditLoading}
+                    className="w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-all duration-200 active:scale-[0.98] disabled:opacity-40 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-lg shadow-purple-500/20">
+                    {auditLoading ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Analyzing...
+                      </span>
+                    ) : "Run Security Audit"}
+                  </button>
+
+                  {auditResult && (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: statusColor(auditResult.status) }}>
+                          ● {auditResult.status.toUpperCase()}
+                        </span>
+                        <button onClick={() => setAuditOpen(!auditOpen)} className="text-slate-500 hover:text-white transition-colors">
+                          {auditOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <p className="text-sm text-slate-300">{auditResult.summary}</p>
+
+                      {auditOpen && (
+                        <>
+                          <div className="rounded-xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-3">
+                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">State</p>
+                            <p className="text-xs text-slate-300">{auditResult.analysis.state}</p>
+                            {auditResult.analysis.risks.length > 0 && (
+                              <>
+                                <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest">Risks</p>
+                                {auditResult.analysis.risks.map((r, i) => (
+                                  <p key={i} className="text-xs text-slate-400">• {r}</p>
+                                ))}
+                              </>
+                            )}
+                            {auditResult.analysis.recommendations.length > 0 && (
+                              <>
+                                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Recommendations</p>
+                                {auditResult.analysis.recommendations.map((r, i) => (
+                                  <p key={i} className="text-xs text-slate-400">• {r}</p>
+                                ))}
+                              </>
+                            )}
+                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Gas Estimate</p>
+                            <p className="text-xs font-mono text-slate-300">{auditResult.analysis.gas_estimate}</p>
+                          </div>
+
+                          {auditResult.actions.length > 0 && (
+                            <div className="flex flex-col gap-2">
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Suggested Actions</p>
+                              {auditResult.actions.map((a, i) => (
+                                <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/5">
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full mt-0.5" style={{ background: `${priorityColor(a.priority)}20`, color: priorityColor(a.priority) }}>
+                                    {a.priority.toUpperCase()}
+                                  </span>
+                                  <div>
+                                    <p className="text-xs font-bold text-white">{a.name}</p>
+                                    <p className="text-[11px] text-slate-500 mt-0.5">{a.description}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </GlassCard>
+
+                {/* Chat Panel */}
+                <GlassCard hover={false} className="flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #2563eb20, #2563eb08)", border: "1px solid #2563eb20" }}>
+                      <MessageSquare className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="font-bold text-sm text-white">Ask CubHunter AI</h3>
+                      <p className="text-[11px] text-slate-500">Smart contract security advisor</p>
+                    </div>
+                    {chatHistory.length > 0 && (
+                      <button onClick={() => setChatHistory([])} className="p-1.5 rounded-lg hover:bg-white/5 transition-colors text-slate-600 hover:text-red-400">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Messages */}
+                  <div className="flex flex-col gap-3 max-h-72 overflow-y-auto pr-1">
+                    {chatHistory.length === 0 && (
+                      <div className="text-center py-8">
+                        <Bot className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                        <p className="text-xs text-slate-600">Ask anything about vault security, operations, or best practices.</p>
+                      </div>
+                    )}
+                    {chatHistory.map((m, i) => (
+                      <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                        <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${m.role === "user" ? "bg-blue-600/20 border border-blue-500/20 text-blue-100" : "bg-white/[0.04] border border-white/5 text-slate-300"}`}>
+                          {m.content}
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/5">
+                          <span className="flex items-center gap-2 text-xs text-slate-500">
+                            <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+                            Thinking...
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Input */}
+                  <div className="flex gap-2 mt-auto">
+                    <input
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleChat()}
+                      placeholder="Ask about vault security..."
+                      className="flex-1 px-4 py-3 bg-white/[0.05] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-600 outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
+                    />
+                    <button onClick={handleChat} disabled={chatLoading || !chatInput.trim()}
+                      className="px-4 py-3 rounded-xl text-white transition-all duration-200 active:scale-95 disabled:opacity-40"
+                      style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)" }}>
+                      <Send className="w-4 h-4" />
+                    </button>
+                  </div>
+                </GlassCard>
+
               </div>
             )}
           </>
