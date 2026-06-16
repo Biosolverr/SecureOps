@@ -1,5 +1,18 @@
 export const VAULT_ADDRESS = "0x9f94712cc394F3Dd5DfaAab37D7f1189eCA8Fc49";
 
+// SecureVault was deployed via `--network baseMainnet` (see hardhat.config.js),
+// so the wallet MUST be on Base Mainnet (chainId 8453) or every read call
+// returns empty data ("0x") and ethers throws BAD_DATA on decode.
+export const CHAIN_ID = 8453;
+export const CHAIN_ID_HEX = "0x2105"; // 8453 in hex
+export const CHAIN_PARAMS = {
+  chainId: CHAIN_ID_HEX,
+  chainName: "Base",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: ["https://mainnet.base.org"],
+  blockExplorerUrls: ["https://basescan.org"],
+};
+
 export const VAULT_ABI = [
   // ─── State variables (view) ───────────────────────────────────────────
   "function currentState() view returns (uint8)",
