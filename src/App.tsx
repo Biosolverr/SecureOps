@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ethers } from "ethers";
-import { VAULT_ADDRESS, VAULT_ABI } from "./config";
+import { VAULT_ADDRESS, VAULT_ABI, CHAIN_ID, CHAIN_ID_HEX, CHAIN_PARAMS } from "./config";
 import {
   Shield, Lock, Send, RotateCcw, AlertTriangle, CheckCircle2,
   Wallet, Copy, Pause, Play, Key, ShieldAlert, Clock,
@@ -24,6 +24,7 @@ export default function App() {
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.Signer | null>(null);
   const [account, setAccount] = useState("");
+  const [chainId, setChainId] = useState<number | null>(null);
   const [vaultAddress, setVaultAddress] = useState(VAULT_ADDRESS);
   const [vault, setVault] = useState<ethers.Contract | null>(null);
   const [vaultState, setVaultState] = useState<any>(null);
@@ -66,18 +67,62 @@ export default function App() {
   useEffect(() => { vaultAddressRef.current = vaultAddress; }, [vaultAddress]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
 
+  const switchToBase = async () => {
+    const eth = (window as any).ethereum;
+    if (!eth) return;
+    try {
+      await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID_HEX }] });
+    } catch (switchErr: any) {
+      if (switchErr?.code === 4902) {
+        try {
+          await eth.request({ method: "wallet_addEthereumChain", params: [CHAIN_PARAMS] });
+        } catch {
+          setTxStatus({ type: "error", msg: "Не удалось добавить сеть Base в кошелёк." });
+        }
+      } else {
+        setTxStatus({ type: "error", msg: "Переключите кошелёк на сеть Base вручную (chainId 8453)." });
+      }
+    }
+  };
+
   const connectWallet = async () => {
     const eth = (window as any).ethereum;
     if (!eth) { alert("Install MetaMask"); return; }
     const p = new ethers.BrowserProvider(eth);
     const s = await p.getSigner();
     const addr = await s.getAddress();
+    const net = await p.getNetwork();
     providerRef.current = p;
     signerRef.current = s;
     setProvider(p);
     setSigner(s);
     setAccount(addr);
+    setChainId(Number(net.chainId));
+    if (Number(net.chainId) !== CHAIN_ID) await switchToBase();
   };
+
+  useEffect(() => {
+    const eth = (window as any).ethereum;
+    if (!eth) return;
+    const handleChainChanged = (hexId: string) => {
+      // Re-init provider/signer on the new chain instead of a hard reload.
+      const p = new ethers.BrowserProvider(eth);
+      providerRef.current = p;
+      setProvider(p);
+      setChainId(parseInt(hexId, 16));
+      p.getSigner().then(s => { signerRef.current = s; setSigner(s); }).catch(() => {});
+    };
+    const handleAccountsChanged = (accounts: string[]) => {
+      if (!accounts.length) { disconnect(); return; }
+      setAccount(accounts[0]);
+    };
+    eth.on?.("chainChanged", handleChainChanged);
+    eth.on?.("accountsChanged", handleAccountsChanged);
+    return () => {
+      eth.removeListener?.("chainChanged", handleChainChanged);
+      eth.removeListener?.("accountsChanged", handleAccountsChanged);
+    };
+  }, []);
 
   const disconnect = () => {
     providerRef.current = null;
@@ -85,6 +130,7 @@ export default function App() {
     setProvider(null);
     setSigner(null);
     setAccount("");
+    setChainId(null);
     setVault(null);
     setVaultState(null);
   };
@@ -96,6 +142,14 @@ export default function App() {
     setLoading(true);
     setTxStatus(null);
     try {
+      const net = await p.getNetwork();
+      if (Number(net.chainId) !== CHAIN_ID) {
+        setTxStatus({
+          type: "error",
+          msg: `Кошелёк подключён к сети ${net.chainId}, а контракт задеплоен на Base Mainnet (8453). Переключите сеть и попробуйте снова.`,
+        });
+        return;
+      }
       const c = new ethers.Contract(address, VAULT_ABI, p);
       const [
         state, owner, guardian, counterparty, commitmentHash,
@@ -270,6 +324,7 @@ export default function App() {
   };
 
   // Helpers
+  const wrongNetwork = !!account && chainId !== null && chainId !== CHAIN_ID;
   const isOwner = vaultState && account && vaultState.owner.toLowerCase() === account.toLowerCase();
   const isCounterparty = vaultState && account && vaultState.counterparty.toLowerCase() === account.toLowerCase();
   const shortAddr = (a: string) => a ? `${a.slice(0, 6)}...${a.slice(-4)}` : "—";
@@ -425,6 +480,22 @@ export default function App() {
       </header>
 
       <main className="relative max-w-7xl mx-auto px-6 py-10">
+
+        {wrongNetwork && (
+          <div className="mb-6 p-4 rounded-xl flex items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/20 text-amber-300">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
+              <span className="text-sm font-medium">
+                Кошелёк подключён к сети {chainId}, а SecureVault задеплоен на Base Mainnet (8453).
+              </span>
+            </div>
+            <button onClick={switchToBase}
+              className="px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-white shrink-0"
+              style={{ background: "linear-gradient(135deg, #2563eb, #7c3aed)" }}>
+              Switch to Base
+            </button>
+          </div>
+        )}
 
         {/* Vault address input */}
         <GlassCard className="mb-8" hover={false}>
